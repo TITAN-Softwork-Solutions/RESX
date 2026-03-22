@@ -4,10 +4,10 @@ RESX is a fast Windows binary recon CLI for exports, PDB-backed symbols, hook ch
 
 ## Highlights
 
-- Resolve exports, ordinals, RVAs, and PDB symbols without leaving the terminal.
-- Spot hook indicators, thunk chains, EDR-style prologue tampering, and suspicious control flow quickly.
-- Run `--intelli` to surface high-signal indicators like IPs, URLs, websockets, proxies, Discord token patterns, Roblox cookie formats, file paths, Minecraft session markers, network/crypto imports, and stream or execution-heavy APIs.
-- Pivot into callers, CFG text views, YARA hits, PE anomalies, section metadata, strings, xrefs, and pseudo-C reconstruction from one tool.
+- Locate Windows exports and PDB-backed system functions quickly across `System32`, drivers, and target images without leaving the terminal.
+- Disassemble by name, ordinal, or RVA and pivot straight into pseudo-C reconstruction, CFG text, strings, and xrefs.
+- Spot hook indicators, thunk chains, EDR-style prologue tampering, and suspicious control flow before you waste time in a debugger.
+- Run `--intelli` to surface high-signal IoC/TTP indicators like IPs, URLs, websockets, proxies, Discord token patterns, Roblox cookie formats, file paths, Minecraft session markers, and network/crypto or execution-heavy imports.
 
 ## Build
 
