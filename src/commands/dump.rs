@@ -2,10 +2,10 @@
 use std::io::Write;
 use serde::Serialize;
 
-use crate::cfgview::{detect_static_hook_indicators, render_cfg_text};
+use crate::cfgview::{detect_static_hook_indicators, render_cfg_colored, render_cfg_text};
 use crate::color::Colors;
 use crate::config::Config;
-use crate::disasm::{disassemble_at, find_string_refs, find_xrefs};
+use crate::disasm::{collect_api_calls, disassemble_at, find_string_refs, find_xrefs, ApiCall};
 use crate::edr::{check_prologue, EdrCheckResult};
 use crate::intelli::{analyze_image, IntelliFinding};
 use crate::output::{print_c_recomp, print_eat, print_iat, print_insns, print_pe_anomalies, print_sections, print_sep, print_yara_matches, StageProgress};
@@ -82,6 +82,8 @@ struct FuncResult {
     hook_indicators: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     edrchk:        Option<EdrJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    api_calls:     Vec<ApiCallJson>,
 }
 
 #[derive(Serialize)]
@@ -114,6 +116,19 @@ struct PeAnomalyJson {
     severity: String,
     kind: String,
     detail: String,
+}
+
+#[derive(Serialize)]
+struct ApiCallJson {
+    rva:         String,
+    kind:        String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    target_rva:  String,
+    label:       String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    dll:         String,
+    is_import:   bool,
+    is_indirect: bool,
 }
 
 #[derive(Serialize)]
@@ -286,6 +301,7 @@ pub fn run(
                 cfg: String::new(),
                 hook_indicators: Vec::new(),
                 edrchk: None,
+                api_calls: Vec::new(),
             };
             let json = serde_json::to_string_pretty(&result).unwrap_or_default();
             writeln!(w, "{}", json).ok();
@@ -475,6 +491,17 @@ pub fn run(
         progress.tick("finding string references");
     }
 
+    let api_calls = if cfg.funcs_depth > 0 {
+        let calls = collect_api_calls(&insns, &pe, &raw, &symbol_index, image_base);
+        if !cfg.json {
+            print_api_calls(w, &calls, &resolved_name, c, &raw, &pe, &symbol_index, &exports, arch, image_base, cfg, target_rva);
+        }
+        progress.tick("building API call map");
+        calls
+    } else {
+        Vec::new()
+    };
+
     let intelli_findings = if want_intelli {
         let findings = analyze_image(&raw, &imports, Some(&insns));
         if !cfg.json {
@@ -513,17 +540,18 @@ pub fn run(
     }
 
     let cfg_text = if want_cfg {
-        let s = render_cfg_text(&insns, image_base);
+        let plain = render_cfg_text(&insns, image_base);
         if !cfg.json {
             writeln!(w, "\n{}", c.bold(&c.b_blue("Control Flow Graph:"))).ok();
             print_sep(w, c, 80);
-            write!(w, "{}", s).ok();
-            if !s.ends_with('\n') {
+            let colored = render_cfg_colored(&insns, image_base, c);
+            write!(w, "{}", colored).ok();
+            if !colored.ends_with('\n') {
                 writeln!(w).ok();
             }
             print_sep(w, c, 80);
         }
-        s
+        plain
     } else {
         String::new()
     };
@@ -573,6 +601,15 @@ pub fn run(
             cfg:     cfg_text,
             hook_indicators,
             edrchk:  edr_result.as_ref().map(to_edr_json),
+            api_calls: api_calls.iter().map(|ac| ApiCallJson {
+                rva:        format!("0x{:08X}", ac.rva),
+                kind:       ac.kind.clone(),
+                target_rva: if ac.target_rva != 0 { format!("0x{:08X}", ac.target_rva) } else { String::new() },
+                label:      ac.label.clone(),
+                dll:        ac.dll.clone(),
+                is_import:  ac.is_import,
+                is_indirect: ac.is_indirect,
+            }).collect(),
         };
         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
         writeln!(w, "{}", json).ok();
@@ -600,6 +637,9 @@ fn count_dump_steps(cfg: &Config, only_metadata: bool, want_recomp: bool) -> usi
         if cfg.show_strings {
             total += 1;
         }
+        if cfg.funcs_depth > 0 {
+            total += 1;
+        }
         if want_recomp {
             total += 1;
         }
@@ -611,6 +651,156 @@ fn count_dump_steps(cfg: &Config, only_metadata: bool, want_recomp: bool) -> usi
         total += 1;
     }
     total
+}
+
+/// 5-color DLL palette — excludes b_yellow/yellow (CALL/JMP), b_mag (Nt*/Zw*),
+/// and b_white (named internals) so each role stays visually distinct.
+fn dll_palette(c: &Colors, idx: usize, s: &str) -> String {
+    match idx % 5 {
+        0 => c.cyan(s),
+        1 => c.green(s),
+        2 => c.magenta(s),
+        3 => c.b_cyan(s),
+        _ => c.b_blue(s),
+    }
+}
+
+/// True for Nt*/Zw* Windows native-API names (syscall stubs, lowest UM layer).
+fn is_nt_api(label: &str) -> bool {
+    (label.starts_with("Nt") || label.starts_with("Zw"))
+        && label.as_bytes().get(2).map_or(false, |b| b.is_ascii_uppercase())
+}
+
+/// Color the mnemonic: CALL → b_yellow, JMP → yellow  (matches disasm listing).
+fn color_kind(kind: &str, c: &Colors) -> String {
+    if kind == "call" { c.b_yellow("CALL") } else { c.yellow("JMP") }
+}
+
+/// Colour a call target:
+///   Nt*/Zw* (any origin) → b_red    — syscall stub, highest visual priority; tag becomes [syscall]
+///   IAT import           → dim(dll.dll!) + palette-color(FuncName), one shade per DLL
+///   Named internal       → b_white   — resolved known symbol
+///   sub_XXXXXXXX         → yellow    — anonymous, address-only
+///   Indirect (call rax)  → dim       — unresolvable
+fn color_target(
+    call: &ApiCall,
+    c: &Colors,
+    dll_map: &mut std::collections::HashMap<String, usize>,
+) -> String {
+    let nt = is_nt_api(&call.label);
+    if call.is_import {
+        let key = call.dll.to_ascii_lowercase();
+        let n   = dll_map.len();
+        let idx = *dll_map.entry(key).or_insert(n);
+        let func = if nt { c.b_red(&call.label) } else { dll_palette(c, idx, &call.label) };
+        format!("{}{}", c.dim(&format!("{}!", call.dll)), func)
+    } else if call.is_indirect {
+        c.dim(&call.label)
+    } else if nt {
+        c.b_red(&call.label)
+    } else if call.label.starts_with("sub_") {
+        c.yellow(&call.label)
+    } else {
+        c.b_white(&call.label)
+    }
+}
+
+fn print_api_calls(
+    w: &mut dyn Write,
+    calls: &[ApiCall],
+    func_name: &str,
+    c: &Colors,
+    raw: &[u8],
+    pe: &crate::pe::PeFile,
+    symbol_index: &crate::symbols::SymbolIndex,
+    exports: &[Export],
+    arch: u32,
+    image_base: u64,
+    cfg: &Config,
+    root_rva: u32,
+) {
+    writeln!(w).ok();
+    writeln!(w, "{}", c.bold(&c.b_cyan(&format!(
+        "API Call Map for {}  [{} call site(s)]:",
+        func_name, calls.len()
+    )))).ok();
+
+    if calls.is_empty() {
+        writeln!(w, "{}", c.dim("  (no CALL/JMP targets found)")).ok();
+        return;
+    }
+
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(root_rva);
+    // Shared DLL→color-index map so every level uses the same shade per DLL.
+    let mut dll_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    print_calls_recursive(w, calls, c, raw, pe, symbol_index, exports, arch, image_base, cfg, 0, &mut visited, &mut dll_map, "  ");
+}
+
+fn print_calls_recursive(
+    w: &mut dyn Write,
+    calls: &[ApiCall],
+    c: &Colors,
+    raw: &[u8],
+    pe: &crate::pe::PeFile,
+    symbol_index: &crate::symbols::SymbolIndex,
+    exports: &[Export],
+    arch: u32,
+    image_base: u64,
+    cfg: &Config,
+    depth: u32,
+    visited: &mut std::collections::HashSet<u32>,
+    dll_map: &mut std::collections::HashMap<String, usize>,
+    line_prefix: &str,
+) {
+    let last = calls.len().saturating_sub(1);
+    for (i, call) in calls.iter().enumerate() {
+        let is_last = i == last;
+        let branch   = if is_last { "└──" } else { "├──" };
+
+        let can_recurse = !call.is_import
+            && !call.is_indirect
+            && call.target_rva != 0
+            && depth + 1 < cfg.funcs_depth
+            && !visited.contains(&call.target_rva);
+
+        let nt  = is_nt_api(&call.label);
+        let tag = match (call.is_import, call.is_indirect, call.kind.as_str(), nt) {
+            (true, _, "jmp", true)  => c.dim(" [syscall · tail call]"),
+            (true, _, _,    true)   => c.dim(" [syscall]"),
+            (true, _, "jmp", false) => c.dim(" [import · tail call]"),
+            (true, _, _,    false)  => c.dim(" [import]"),
+            (_, true, _, _)         => c.dim(" [indirect]"),
+            (_, _, "jmp", _)        => c.dim(" [tail call]"),
+            _                       => c.dim(" [internal]"),
+        };
+
+        let colored_target = color_target(call, c, dll_map);
+
+        writeln!(w, "{}{} {}  {}  {}{}",
+            line_prefix, branch,
+            c.dim(&format!("0x{:X}", call.rva)),
+            color_kind(&call.kind, c),
+            colored_target,
+            tag,
+        ).ok();
+
+        if can_recurse {
+            if let Some(file_off) = pe.rva_to_offset(call.target_rva) {
+                visited.insert(call.target_rva);
+                let mut sub_cfg = cfg.clone();
+                sub_cfg.max_insns = sub_cfg.max_insns.min(300);
+                if let Ok(sub_insns) = disassemble_at(raw, file_off, call.target_rva, arch, image_base, exports, Some(symbol_index), &sub_cfg) {
+                    let sub_calls = collect_api_calls(&sub_insns, pe, raw, symbol_index, image_base);
+                    if !sub_calls.is_empty() {
+                        let child_prefix = format!("{}{}   ", line_prefix, if is_last { " " } else { "│" });
+                        print_calls_recursive(w, &sub_calls, c, raw, pe, symbol_index, exports, arch, image_base, cfg, depth + 1, visited, dll_map, &child_prefix);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn print_intelli_findings(w: &mut dyn Write, findings: &[IntelliFinding], c: &Colors) {

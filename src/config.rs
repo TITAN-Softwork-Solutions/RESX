@@ -128,6 +128,13 @@ pub struct Cli {
     #[arg(long = "strings")]
     pub strings: bool,
 
+    #[arg(long = "funcs")]
+    pub funcs: bool,
+
+    /// Recursively trace internal sub_XXXXXXXX calls N levels deep (implies --funcs).
+    #[arg(long = "funcs-depth", value_name = "N")]
+    pub funcs_depth: Option<u32>,
+
     #[arg(long = "cfg", value_name = "FMT")]
     pub cfg_view: Option<String>,
 
@@ -257,6 +264,7 @@ pub struct Config {
     pub recomp:        bool,
     pub show_xrefs:    bool,
     pub show_strings:  bool,
+    pub funcs_depth:   u32,
     pub cfg_view:      String,
     pub show_eat:      bool,
     pub show_iat:      bool,
@@ -324,6 +332,7 @@ impl Config {
             recomp:        cli.recomp,
             show_xrefs:    cli.xrefs,
             show_strings:  cli.strings,
+            funcs_depth:   cli.funcs_depth.unwrap_or(if cli.funcs { 1 } else { 0 }),
             cfg_view:      cli.cfg_view.clone().unwrap_or_default(),
             show_eat:      cli.show_eat,
             show_iat:      cli.show_iat,
