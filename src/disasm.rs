@@ -5,7 +5,7 @@ use iced_x86::{
 };
 
 use crate::config::Config;
-use crate::pe::Export;
+use crate::pe::{Export, PeFile};
 use crate::symbols::SymbolIndex;
 
 
@@ -299,6 +299,105 @@ pub fn find_xrefs(insns: &[Instruction], exports: &[Export], image_base: u64) ->
             results.push(format!("RVA 0x{:08X}", rva));
         }
     }
+    results
+}
+
+/// One CALL or JMP in a function, with its resolved target label.
+#[derive(Debug, Clone)]
+pub struct ApiCall {
+    pub rva:         u32,
+    pub kind:        String,    // "call" or "jmp"
+    pub target_rva:  u32,       // 0 when indirect/unresolvable
+    pub label:       String,    // resolved name or "sub_XXXXXXXX"
+    pub dll:         String,    // non-empty for IAT imports
+    pub is_import:   bool,
+    pub is_indirect: bool,
+}
+
+/// Walk `insns` and resolve every CALL/JMP to its target name.
+/// Handles direct calls (using the symbol index) and indirect IAT calls
+/// (using `resolve_iat_slot`).
+pub fn collect_api_calls(
+    insns: &[Instruction],
+    pe: &PeFile,
+    raw: &[u8],
+    symbol_index: &SymbolIndex,
+    image_base: u64,
+) -> Vec<ApiCall> {
+    let mut results = Vec::new();
+
+    for insn in insns {
+        if !insn.is_call && !insn.is_jmp {
+            continue;
+        }
+        let kind = if insn.is_call { "call" } else { "jmp" }.to_string();
+
+        if insn.call_target != 0 {
+            // Direct near call / unconditional jmp with an immediate target.
+            let target_rva = insn.call_target.wrapping_sub(image_base) as u32;
+            let label = if let Some(hit) = symbol_index.lookup(insn.call_target) {
+                hit.symbol.name.clone()
+            } else {
+                format!("sub_{:08X}", target_rva)
+            };
+            results.push(ApiCall {
+                rva: insn.rva,
+                kind,
+                target_rva,
+                label,
+                dll: String::new(),
+                is_import: false,
+                is_indirect: false,
+            });
+        } else if insn.iced.op_count() > 0 && insn.iced.op0_kind() == OpKind::Memory {
+            // Indirect call/jmp — most commonly `call [rip+rel32]` through the IAT.
+            let slot_va = if insn.iced.memory_base() == Register::RIP
+                          || insn.iced.memory_base() == Register::EIP
+            {
+                insn.iced.ip_rel_memory_address()
+            } else if insn.iced.memory_base() == Register::None
+                   && insn.iced.memory_index() == Register::None
+            {
+                insn.iced.memory_displacement64()
+            } else {
+                0
+            };
+
+            if slot_va != 0 && slot_va >= image_base {
+                let slot_rva = (slot_va - image_base) as u32;
+                if let Some((dll, func)) = crate::pe::resolve_iat_slot(pe, raw, slot_rva) {
+                    results.push(ApiCall {
+                        rva: insn.rva,
+                        kind,
+                        target_rva: 0,
+                        label: func,
+                        dll,
+                        is_import: true,
+                        is_indirect: true,
+                    });
+                    continue;
+                }
+            }
+
+            // IAT resolution failed — use whatever the comment already has.
+            let label = if !insn.comment.is_empty() {
+                insn.comment.clone()
+            } else {
+                format!("[{}]", insn.operands)
+            };
+            results.push(ApiCall {
+                rva: insn.rva,
+                kind,
+                target_rva: 0,
+                label,
+                dll: String::new(),
+                is_import: false,
+                is_indirect: true,
+            });
+        }
+        // else: call_target==0 and not a memory operand (e.g. `call rax`) — skip
+    }
+
     results
 }
 

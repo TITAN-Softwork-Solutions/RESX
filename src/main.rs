@@ -214,9 +214,11 @@ DUMP OPTIONS
   --c-out <file>             write reconstruction to a C file
   --edrchk                   compare disk vs loaded-memory prologue
   --hookchk                  show static entry-hook / thunk indicators
-  --xrefs                    show call targets
+  --xrefs                    show call targets (deduplicated flat list)
   --strings                  show referenced string literals
-  --cfg text                 show a basic control-flow graph
+  --funcs                    show API call map: every CALL/JMP with its resolved target
+  --funcs-depth <N>          recursively trace internal subs N levels deep (implies --funcs)
+  --cfg text                 show a colour-coded basic control-flow graph
   --follow-jmp               follow entry-point thunk
   --rebase <addr>            compute rebased addresses
 
@@ -261,6 +263,8 @@ EXAMPLES
   resx dump kernel32.dll CreateFileW --recomp --bytes
   resx dump ntdll.dll NtOpenProcess --edrchk --json
   resx dump ntdll.dll NtOpenProcess --cfg text --hookchk
+  resx dump kernel32.dll CreateFileW --funcs
+  resx cfg ntdll.dll NtOpenProcess
   resx syms .\J58.dll --pdb .\J58.pdb
   resx sections ntdll.dll
   resx pechk ntdll.dll
@@ -268,6 +272,7 @@ EXAMPLES
   resx callers ntdll.dll NtOpenProcess --depth 2 --format flat
   resx locate-all-sym NtOpenProcess
   resx dump --example
+  resx cfg --example
 "#);
 }
 
@@ -275,7 +280,7 @@ fn example_topic<'a>(raw_args: &'a [String], cli: &'a Cli) -> &'a str {
     const KNOWN: &[&str] = &[
         "dump", "cfg", "peinfo", "sections", "eat", "iat", "syms", "pechk", "callers",
         "locate", "locate-all", "locate-sym", "locate-all-sym", "yara", "edrchk",
-        "follow", "recomp", "symbols",
+        "follow", "recomp", "symbols", "funcs",
     ];
     if raw_args.len() >= 2 {
         let first = raw_args[1].as_str();
@@ -411,12 +416,29 @@ DUMP EXAMPLES
   resx dump ntdll.dll --ordinal 451
   resx dump kernel32.dll CreateFileW --recomp --c-out CreateFileW.c
   resx dump ntdll.dll NtOpenProcess --recomp --edrchk --c-out NtOpenProcess.c
+  resx dump kernel32.dll CreateFileW --funcs               # flat call map
+  resx dump kernel32.dll CreateFileW --funcs-depth 3       # recurse 3 levels deep
+  resx dump ntdll.dll NtCreateFile --funcs --json          # call map as JSON
+  resx dump kernel32.dll CreateFileW --funcs --xrefs       # call map + xref list
 "#,
         "cfg" => r#"
 CFG EXAMPLES
   resx cfg ntdll.dll NtOpenProcess
   resx cfg blackbird.sys BLACKBIRDNtAllocateVirtualMemoryHookStub
   resx cfg ntdll.dll --at 0x161F40
+
+BLOCK COLOURS
+  green    entry block
+  red      exit / return block
+  yellow   branch block (conditional jump)
+  yellow   unconditional jump block
+  cyan     normal fall-through block
+
+EDGE COLOURS
+  green    [taken]       conditional branch target
+  blue     [fallthrough] falls through to next block
+  yellow   [jump]        unconditional jump target
+  red      [exit]        function return
 "#,
         "sections" | "pe" | "pechk" => r#"
 PE ANALYSIS EXAMPLES
@@ -443,6 +465,31 @@ SYMBOL EXAMPLES
   resx dump ntdll.dll RtlpHeapHandleError --sym-server https://msdl.microsoft.com/download/symbols
   resx syms .\J58.dll --pdb .\J58.pdb
 "#,
+        "funcs" => r#"
+FUNCS EXAMPLES
+  resx dump kernel32.dll CreateFileW --funcs
+  resx dump kernel32.dll CreateFileW --funcs-depth 2
+  resx dump ntdll.dll NtCreateFile --funcs-depth 3
+  resx dump ntdll.dll NtOpenProcess --funcs --json
+  resx dump kernel32.dll CreateFileW --funcs --xrefs
+
+NOTES
+  --funcs shows every CALL and unconditional JMP in the disassembled function,
+  each annotated with its resolved target.
+
+  --funcs-depth <N> enables the same call map and additionally recurses into
+  internal sub_XXXXXXXX targets, expanding their own call sites as a tree up
+  to N levels deep.  Already-visited subs are not re-expanded (cycle-safe).
+
+  Targets are classified as:
+    [import]            resolved through the IAT to a specific DLL!Function
+    [import · tail call] IAT import reached via a tail-call JMP
+    [internal]          direct call to a symbol or sub_XXXXXXXX within this image
+    [tail call]         unconditional JMP to an internal target
+    [indirect]          indirect call (e.g. call rax) — target not statically known
+
+  --json adds an "api_calls" array to the output for scripting.
+"#,
         "eat" => r#"
 EAT EXAMPLES
   resx eat kernel32.dll
@@ -458,11 +505,14 @@ GENERAL EXAMPLES
   resx dump ntdll.dll NtCreateFile
   resx dump kernel32.dll CreateFileW --recomp
   resx dump ntdll.dll NtOpenProcess --edrchk
+  resx dump kernel32.dll CreateFileW --funcs
+  resx cfg ntdll.dll NtOpenProcess
   resx locate-all-sym NtOpenProcess
 
 TOPICS
   resx edrchk --example
   resx dump --example
+  resx cfg --example
   resx callers --example
   resx locate --example
   resx syms --example

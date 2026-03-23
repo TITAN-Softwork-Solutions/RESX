@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use crate::cfgview::render_cfg_text;
+use crate::cfgview::render_cfg_colored;
 use crate::color::Colors;
 use crate::config::Config;
 use crate::disasm::disassemble_at;
@@ -78,7 +78,7 @@ pub fn run(dll_arg: &str, func_arg: &str, cfg: &Config, w: &mut dyn Write, c: &C
         writeln!(w).ok();
     }
     print_sep(w, c, 88);
-    let graph = render_cfg_text(&insns, image_base);
+    let graph = render_cfg_colored(&insns, image_base, c);
     write!(w, "{}", graph).ok();
     if !graph.ends_with('\n') {
         writeln!(w).ok();
