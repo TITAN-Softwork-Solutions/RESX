@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::color::Colors;
 use crate::config::Config;
-use crate::output::{print_sep, ProgressBar};
+use crate::output::ProgressBar;
 use crate::pdb::load_pdb_symbol;
 use crate::pe::{parse_pe, read_exports};
 use crate::thunk::follow_jmp_thunk;
@@ -121,11 +121,9 @@ pub fn run(func_name: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Resu
     } else {
         writeln!(w).ok();
         writeln!(w, "{}", c.bold(&c.b_yellow(&format!("Locations of '{}':", func_name)))).ok();
-        print_sep(w, c, 72);
         for r in &results {
             print_locate_result(w, c, r);
         }
-        print_sep(w, c, 72);
         let hint = if deep {
             "use --locate-all-sym to show all DLLs"
         } else {
@@ -199,7 +197,7 @@ fn stream_export_hits(
     matched_paths: &mut std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let total: usize = tiers.iter().map(|tier| tier.len()).sum();
-    let pb = ProgressBar::new(total, c.on && !cfg.quiet);
+    let pb = ProgressBar::new(total, c.on && !cfg.quiet, c.on);
     for tier in tiers {
         let mut tier_hits = scan_export_bucket(
             tier,
@@ -296,7 +294,7 @@ fn stream_symbol_hits(
     matched_paths: &mut std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let total: usize = tiers.iter().map(|tier| tier.len()).sum();
-    let pb = ProgressBar::new(total, c.on && !cfg.quiet);
+    let pb = ProgressBar::new(total, c.on && !cfg.quiet, c.on);
     for tier in tiers {
         let before = results.len();
         scan_symbol_bucket(

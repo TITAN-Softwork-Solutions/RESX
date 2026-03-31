@@ -168,9 +168,6 @@ pub struct Cli {
     #[arg(long = "scan-dll", action = clap::ArgAction::Append, value_name = "DLL")]
     pub scan_dlls: Vec<String>,
 
-    #[arg(long = "no-wow64")]
-    pub no_wow64: bool,
-
     #[arg(long = "scan-exe")]
     pub scan_exe: bool,
 
@@ -276,7 +273,6 @@ pub struct Config {
     pub yara:          Vec<String>,
     pub scan_dirs:     Vec<String>,
     pub scan_dlls:     Vec<String>,
-    pub no_wow64:      bool,
     pub scan_exe:      bool,
     pub include:       String,
     pub exclude:       String,
@@ -344,7 +340,6 @@ impl Config {
             yara:          cli.yara.clone(),
             scan_dirs:     cli.scan_dirs.clone(),
             scan_dlls:     cli.scan_dlls.clone(),
-            no_wow64:      cli.no_wow64,
             scan_exe:      cli.scan_exe,
             include:       cli.include.clone(),
             exclude:       cli.exclude.clone(),

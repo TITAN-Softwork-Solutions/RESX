@@ -97,7 +97,7 @@ struct AnomalyJson {
 }
 
 pub fn run(dll_arg: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Result<(), String> {
-    let mut progress = StageProgress::new(6, !cfg.quiet && !cfg.json);
+    let mut progress = StageProgress::new(6, !cfg.quiet && !cfg.json, c.on);
     if !cfg.quiet && !cfg.json {
         writeln!(w, "{}", c.info(&format!("Collecting PE info for '{}'...", dll_arg))).ok();
     }

@@ -1,6 +1,6 @@
 
 use std::io::Write;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, atomic::{AtomicUsize, Ordering}};
 
 use iced_x86::Mnemonic;
 
@@ -15,25 +15,106 @@ pub struct ProgressBar {
     pub total: usize,
     done: AtomicUsize,
     active: bool,
+    color: bool,
+}
+
+struct AsyncLane {
+    done: AtomicUsize,
+    label: Mutex<String>,
+}
+
+pub struct AsyncProgress {
+    total: usize,
+    done: AtomicUsize,
+    lanes: Vec<AsyncLane>,
+    active: bool,
+    color: bool,
+    render_lock: Mutex<()>,
+}
+
+impl AsyncProgress {
+    pub fn new(total: usize, lanes: usize, active: bool, color: bool) -> Self {
+        let lane_count = lanes.max(1);
+        let active = active && total > 0;
+        let lanes = (0..lane_count).map(|_| AsyncLane {
+            done: AtomicUsize::new(0),
+            label: Mutex::new(String::new()),
+        }).collect();
+        if active {
+            for _ in 0..=lane_count {
+                eprintln!();
+            }
+            let _ = std::io::stderr().flush();
+        }
+        Self {
+            total,
+            done: AtomicUsize::new(0),
+            lanes,
+            active,
+            color,
+            render_lock: Mutex::new(()),
+        }
+    }
+
+    pub fn tick(&self, lane: usize, label: &str) {
+        if !self.active {
+            return;
+        }
+        let lane = lane.min(self.lanes.len().saturating_sub(1));
+        self.done.fetch_add(1, Ordering::Relaxed);
+        self.lanes[lane].done.fetch_add(1, Ordering::Relaxed);
+        *self.lanes[lane].label.lock().unwrap() = label.to_owned();
+        self.render();
+    }
+
+    fn render(&self) {
+        let _g = self.render_lock.lock().unwrap();
+        eprint!("\x1b[{}A", self.lanes.len() + 1);
+        let done = self.done.load(Ordering::Relaxed).min(self.total);
+        let beam = render_beam(30, done, self.color);
+        if self.color {
+            eprint!("\r\x1b[2K  {}  {:>6}/{:<6}  \x1b[2mtotal jobs\x1b[0m\n", beam, done, self.total);
+        } else {
+            eprint!("\r\x1b[2K  {}  {:>6}/{:<6}  total jobs\n", beam, done, self.total);
+        }
+
+        for (idx, lane) in self.lanes.iter().enumerate() {
+            let lane_done = lane.done.load(Ordering::Relaxed);
+            let lane_beam = render_beam(18, lane_done, self.color);
+            let label = lane.label.lock().unwrap().clone();
+            let label = trunc_label(&label, 42);
+            if self.color {
+                eprint!("\r\x1b[2K  {}  \x1b[2mworker {:>2}\x1b[0m  {:>6}  \x1b[2m{:<42}\x1b[0m\n",
+                    lane_beam, idx + 1, lane_done, label);
+            } else {
+                eprint!("\r\x1b[2K  {}  worker {:>2}  {:>6}  {:<42}\n",
+                    lane_beam, idx + 1, lane_done, label);
+            }
+        }
+        let _ = std::io::stderr().flush();
+    }
+
+    pub fn finish(&self) {
+        if !self.active {
+            return;
+        }
+        let _g = self.render_lock.lock().unwrap();
+        eprint!("\x1b[{}A\x1b[{}M", self.lanes.len() + 1, self.lanes.len() + 1);
+        let _ = std::io::stderr().flush();
+    }
 }
 
 impl ProgressBar {
-    pub fn new(total: usize, active: bool) -> Self {
-        Self { total, active, done: AtomicUsize::new(0) }
+    pub fn new(total: usize, active: bool, color: bool) -> Self {
+        Self { total, active, color, done: AtomicUsize::new(0) }
     }
 
     pub fn tick(&self, label: &str) {
         if !self.active { return; }
         let n = self.done.fetch_add(1, Ordering::Relaxed) + 1;
-        let w = 30usize;
-        let filled = if self.total > 0 { (n * w) / self.total } else { 0 }.min(w);
-        let bar = if filled < w {
-            format!("{}>{}",  "=".repeat(filled), " ".repeat(w - filled - 1))
-        } else {
-            "=".repeat(w)
-        };
+        let beam = render_beam(30, n, self.color);
         let label = trunc_label(label, 38);
-        eprint!("\r  [{bar}] {:>5}/{:<5}  {:<38}", n, self.total, label);
+        eprint!("\r  {}  {:>5}/{:<5}  {:<38}", beam, n, self.total, label);
     }
 
     pub fn finish(&self) {
@@ -52,15 +133,31 @@ fn trunc_label(s: &str, max_chars: usize) -> String {
     }
 }
 
+fn render_beam(width: usize, n: usize, color: bool) -> String {
+    let cycle = if width > 1 { 2 * (width - 1) } else { 1 };
+    let p   = n % cycle;
+    let pos = if p < width { p } else { cycle - p };
+    if color {
+        format!(
+            "\x1b[2m{}\x1b[0m\x1b[96m●\x1b[0m\x1b[2m{}\x1b[0m",
+            "·".repeat(pos),
+            "·".repeat(width - pos - 1),
+        )
+    } else {
+        (0..width).map(|i| if i == pos { '●' } else { '·' }).collect()
+    }
+}
+
 pub struct StageProgress {
     total: usize,
     done: usize,
     active: bool,
+    color: bool,
 }
 
 impl StageProgress {
-    pub fn new(total: usize, active: bool) -> Self {
-        Self { total: total.max(1), done: 0, active }
+    pub fn new(total: usize, active: bool, color: bool) -> Self {
+        Self { total: total.max(1), done: 0, active, color }
     }
 
     pub fn tick(&mut self, label: &str) {
@@ -68,15 +165,9 @@ impl StageProgress {
             return;
         }
         self.done = (self.done + 1).min(self.total);
-        let w = 30usize;
-        let filled = ((self.done * w) / self.total).min(w);
-        let bar = if filled < w {
-            format!("{}>{}", "=".repeat(filled), " ".repeat(w - filled - 1))
-        } else {
-            "=".repeat(w)
-        };
+        let beam = render_beam(30, self.done, self.color);
         let label = trunc_label(label, 38);
-        eprint!("\r  [{bar}] {:>2}/{:<2}  {:<38}", self.done, self.total, label);
+        eprint!("\r  {}  {:>2}/{:<2}  {:<38}", beam, self.done, self.total, label);
         let _ = std::io::stderr().flush();
     }
 
@@ -88,12 +179,6 @@ impl StageProgress {
         let _ = std::io::stderr().flush();
     }
 }
-
-
-pub fn print_sep(w: &mut dyn Write, c: &Colors, width: usize) {
-    writeln!(w, "{}", c.dim(&"─".repeat(width))).ok();
-}
-
 
 fn apply_insn_color(insn: &Instruction, s: &str, c: &Colors) -> String {
     let m = insn.iced.mnemonic();
@@ -157,10 +242,8 @@ pub fn print_eat(w: &mut dyn Write, exports: &[Export], dll_name: &str, c: &Colo
     writeln!(w, "{}", c.bold(&c.b_yellow(&format!(
         "Export Table: {} ({} exports)", dll_name, exports.len()
     )))).ok();
-    print_sep(w, c, 80);
     writeln!(w, "  {:<6}  {:<10}  {}",
         c.bold("ORD"), c.bold("RVA"), c.bold("NAME")).ok();
-    print_sep(w, c, 80);
     for e in exports {
         let suffix = if !e.forward_to.is_empty() {
             c.dim(&format!("  → {} [fwd]", e.forward_to))
@@ -170,7 +253,6 @@ pub fn print_eat(w: &mut dyn Write, exports: &[Export], dll_name: &str, c: &Colo
         writeln!(w, "  {:<6}  0x{:08X}  {}{}",
             e.ordinal, e.rva, c.b_white(&e.name), suffix).ok();
     }
-    print_sep(w, c, 80);
 }
 
 
@@ -181,7 +263,6 @@ pub fn print_iat(w: &mut dyn Write, imps: &[ImportDll], dll_name: &str, c: &Colo
         "Import Table: {} ({} DLLs, {} imports)", dll_name, imps.len(), total
     )))).ok();
     for d in imps {
-        print_sep(w, c, 80);
         writeln!(w, "  {} {}", c.bold(&c.cyan("DLL:")), c.b_yellow(&d.dll)).ok();
         for e in &d.entries {
             let hint = if !e.by_ord {
@@ -192,14 +273,11 @@ pub fn print_iat(w: &mut dyn Write, imps: &[ImportDll], dll_name: &str, c: &Colo
             writeln!(w, "    {}{}", c.b_white(&e.name), hint).ok();
         }
     }
-    print_sep(w, c, 80);
 }
 
 pub fn print_sections(w: &mut dyn Write, pe: &PeFile, c: &Colors) {
-    const WIDTH: usize = 126;
     writeln!(w).ok();
     writeln!(w, "{}", c.bold(&c.b_blue("Sections:"))).ok();
-    writeln!(w, "{}", c.dim(&"-".repeat(WIDTH))).ok();
     writeln!(
         w,
         "  {:<10} {:<10} {:<10} {:<10} {:<4} {:<22} {:<22} {:<8} {}",
@@ -213,7 +291,6 @@ pub fn print_sections(w: &mut dyn Write, pe: &PeFile, c: &Colors) {
         c.bold("ENTROPY"),
         c.bold("NOTES")
     ).ok();
-    writeln!(w, "{}", c.dim(&"-".repeat(WIDTH))).ok();
     for s in &pe.sections {
         let notes = s.unusual_protection_reason().unwrap_or_default();
         let notes = if notes.is_empty() { String::new() } else { c.warn(&notes) };
@@ -231,7 +308,6 @@ pub fn print_sections(w: &mut dyn Write, pe: &PeFile, c: &Colors) {
             notes
         ).ok();
     }
-    writeln!(w, "{}", c.dim(&"-".repeat(WIDTH))).ok();
 }
 
 pub fn print_pe_anomalies(w: &mut dyn Write, anomalies: &[PeAnomaly], c: &Colors) {

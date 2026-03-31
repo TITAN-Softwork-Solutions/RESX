@@ -7,7 +7,7 @@ use crate::pdb::load_pdb_symbols;
 use crate::search::find_dll_path;
 
 pub fn run(dll_arg: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Result<(), String> {
-    let mut progress = StageProgress::new(2, !cfg.quiet && !cfg.json);
+    let mut progress = StageProgress::new(2, !cfg.quiet && !cfg.json, c.on);
     let dll_path = find_dll_path(dll_arg, cfg)?;
     progress.tick("locating target image");
     let dll_name = dll_path.file_name().unwrap_or_default().to_string_lossy().to_string();
