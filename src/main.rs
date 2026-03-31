@@ -24,6 +24,7 @@ use std::io::{self, BufWriter, Write};
 use std::time::Instant;
 
 use clap::Parser;
+use rayon::ThreadPoolBuilder;
 
 use crate::color::{enable_windows_ansi, is_terminal, Colors};
 use crate::config::{Cli, Config};
@@ -57,6 +58,10 @@ fn main() {
 
     let cfg = Config::from_cli(&cli, color);
     let c = Colors::new(color && !cfg.json);
+
+    if cfg.workers > 0 {
+        let _ = ThreadPoolBuilder::new().num_threads(cfg.workers).build_global();
+    }
 
     let stdout = io::stdout();
     let mut stdout_lock = BufWriter::new(stdout.lock());
@@ -214,12 +219,14 @@ DUMP OPTIONS
   --c-out <file>             write reconstruction to a C file
   --edrchk                   compare disk vs loaded-memory prologue
   --hookchk                  show static entry-hook / thunk indicators
+  --intelli                  run heuristic triage: behavioural tags, anomalies, IAT patterns
   --xrefs                    show call targets (deduplicated flat list)
   --strings                  show referenced string literals
   --funcs                    show API call map: every CALL/JMP with its resolved target
   --funcs-depth <N>          recursively trace internal subs N levels deep (implies --funcs)
   --cfg text                 show a colour-coded basic control-flow graph
-  --follow-jmp               follow entry-point thunk
+  --follow-jmp               follow entry-point thunk (default: on)
+  --no-follow-jmp            disable entry-point thunk following
   --rebase <addr>            compute rebased addresses
 
 SYMBOL OPTIONS
@@ -239,7 +246,6 @@ FOLLOW OPTIONS
   --scan-dir <dir>           add directory to scan
   --scan-dll <dll>           explicitly include an image
   --scan-exe                 include EXEs
-  --no-wow64                 skip SysWOW64
   --include <glob>           include filter
   --exclude <glob>           exclude filter
   --max-dll-size <mb>        max image size

@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use crate::config::Config;
-use crate::pe::{attribute_to_func, find_iat_slot_va, parse_pe, read_exports};
+use crate::pe::{attribute_to_func, parse_pe, read_cstr, read_exports, read_u32, read_u64};
 
 #[derive(Debug, Clone)]
 pub struct FollowScanConfig {
@@ -11,7 +12,6 @@ pub struct FollowScanConfig {
     pub scan_dirs: Vec<String>,
     pub scan_dlls: Vec<String>,
     pub no_system: bool,
-    pub no_wow64: bool,
     pub scan_exe: bool,
     pub include: String,
     pub exclude: String,
@@ -36,7 +36,6 @@ impl FollowScanConfig {
             scan_dirs: cfg.scan_dirs.clone(),
             scan_dlls: cfg.scan_dlls.clone(),
             no_system: cfg.no_system,
-            no_wow64: cfg.no_wow64,
             scan_exe: cfg.scan_exe,
             include: cfg.include.clone(),
             exclude: cfg.exclude.clone(),
@@ -66,15 +65,284 @@ pub struct Caller {
     pub sites: Vec<CallSite>,
 }
 
+pub struct ScanImage {
+    pub path: PathBuf,
+    data: OnceLock<Option<Arc<ScanImageData>>>,
+    index: OnceLock<Option<Arc<ReverseCallIndex>>>,
+}
+
+pub struct ScanImageData {
+    pub raw: Vec<u8>,
+    pub pe: crate::pe::PeFile,
+    pub exports: Vec<crate::pe::Export>,
+    pub dll_name: String,
+    pub dll_base_lower: String,
+    pub dll_path_str: String,
+}
+
+struct IndexedCaller {
+    func: crate::follow_trace::FuncRef,
+    sites: Vec<CallSite>,
+}
+
+struct ReverseCallIndex {
+    direct: std::collections::HashMap<u64, Vec<IndexedCaller>>,
+    imports: std::collections::HashMap<(String, String), Vec<IndexedCaller>>,
+}
+
+impl ScanImage {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path, data: OnceLock::new(), index: OnceLock::new() }
+    }
+
+    pub fn data(&self) -> Option<&Arc<ScanImageData>> {
+        self.data.get_or_init(|| {
+            let raw = std::fs::read(&self.path).ok()?;
+            let pe = parse_pe(&raw).ok()?;
+            let exports = read_exports(&pe, &raw);
+            let dll_name = self.path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let dll_base_lower = dll_name.to_lowercase();
+            let dll_path_str = self.path.to_string_lossy().to_string();
+            Some(Arc::new(ScanImageData {
+                raw,
+                pe,
+                exports,
+                dll_name,
+                dll_base_lower,
+                dll_path_str,
+            }))
+        }).as_ref()
+    }
+
+    fn index(&self) -> Option<&Arc<ReverseCallIndex>> {
+        self.index.get_or_init(|| {
+            let data = self.data()?;
+            Some(Arc::new(build_reverse_index(data)))
+        }).as_ref()
+    }
+}
+
+fn normalize_dll_base(path_or_name: &str) -> String {
+    path_or_name
+        .rsplit(&['/', '\\'][..]).next().unwrap_or(path_or_name)
+        .trim_end_matches(".dll")
+        .trim_end_matches(".DLL")
+        .to_lowercase()
+}
+
+fn read_import_slots(
+    pe: &crate::pe::PeFile,
+    raw: &[u8],
+) -> std::collections::HashMap<u64, (String, String)> {
+    let mut slots = std::collections::HashMap::new();
+    let (dir_rva, _) = pe.data_dir(1);
+    if dir_rva == 0 {
+        return slots;
+    }
+    let Some(mut off) = pe.rva_to_offset(dir_rva) else { return slots; };
+    let ptr_size = if pe.arch == 64 { 8u32 } else { 4u32 };
+    let ord_flag_64 = 1u64 << 63;
+    let ord_flag_32 = 1u64 << 31;
+
+    loop {
+        if off + 20 > raw.len() {
+            break;
+        }
+        let ilt_rva = read_u32(raw, off);
+        let name_rva = read_u32(raw, off + 12);
+        let iat_rva = read_u32(raw, off + 16);
+        off += 20;
+        if name_rva == 0 && ilt_rva == 0 {
+            break;
+        }
+
+        let Some(name_off) = pe.rva_to_offset(name_rva) else { continue; };
+        let dll_name = read_cstr(raw, name_off);
+        let dll_base = normalize_dll_base(&dll_name);
+        let thunk_rva = if ilt_rva != 0 { ilt_rva } else { iat_rva };
+        let Some(mut ilt_off) = pe.rva_to_offset(thunk_rva) else { continue; };
+
+        let mut slot_idx = 0u32;
+        loop {
+            let thunk = if pe.arch == 64 {
+                let v = read_u64(raw, ilt_off);
+                ilt_off += 8;
+                v
+            } else {
+                let v = read_u32(raw, ilt_off) as u64;
+                ilt_off += 4;
+                v
+            };
+            if thunk == 0 {
+                break;
+            }
+
+            let is_ord = (pe.arch == 64 && thunk & ord_flag_64 != 0)
+                || (pe.arch == 32 && thunk & ord_flag_32 != 0);
+            let func_name = if is_ord {
+                format!("#{}", thunk & 0xFFFF)
+            } else {
+                let hint_rva = (thunk & 0x7FFF_FFFF) as u32;
+                match pe.rva_to_offset(hint_rva) {
+                    Some(ho) => read_cstr(raw, ho + 2),
+                    None => format!("ord_{}", thunk & 0xFFFF),
+                }
+            };
+
+            let slot_va = pe.image_base + (iat_rva + slot_idx * ptr_size) as u64;
+            slots.insert(slot_va, (dll_base.clone(), func_name));
+            slot_idx += 1;
+        }
+    }
+
+    slots
+}
+
+fn owner_func_for_site(
+    site_rva: u32,
+    data: &ScanImageData,
+) -> (u32, crate::follow_trace::FuncRef) {
+    if let Some(e) = attribute_to_func(site_rva, &data.exports) {
+        (e.rva, crate::follow_trace::FuncRef {
+            dll: data.dll_name.clone(),
+            dll_path: data.dll_path_str.clone(),
+            name: e.name.clone(),
+            rva: e.rva,
+            va: data.pe.image_base + e.rva as u64,
+            is_internal: false,
+        })
+    } else {
+        (site_rva, crate::follow_trace::FuncRef {
+            dll: data.dll_name.clone(),
+            dll_path: data.dll_path_str.clone(),
+            name: format!("sub_{:08X}", site_rva),
+            rva: site_rva,
+            va: data.pe.image_base + site_rva as u64,
+            is_internal: true,
+        })
+    }
+}
+
+fn push_indexed_site(
+    bucket: &mut std::collections::HashMap<u32, IndexedCaller>,
+    site: CallSite,
+    data: &ScanImageData,
+) {
+    let (owner_rva, func) = owner_func_for_site(site.rva, data);
+    let entry = bucket.entry(owner_rva).or_insert_with(|| IndexedCaller {
+        func,
+        sites: Vec::new(),
+    });
+    entry.sites.push(site);
+}
+
+fn build_reverse_index(data: &ScanImageData) -> ReverseCallIndex {
+    let mut direct: std::collections::HashMap<u64, std::collections::HashMap<u32, IndexedCaller>> =
+        std::collections::HashMap::new();
+    let mut imports: std::collections::HashMap<(String, String), std::collections::HashMap<u32, IndexedCaller>> =
+        std::collections::HashMap::new();
+    let import_slots = read_import_slots(&data.pe, &data.raw);
+
+    for s in &data.pe.sections {
+        if s.characteristics & (SCN_CODE | SCN_EXEC) == 0 { continue; }
+        if s.raw_offset == 0 || s.raw_size == 0 { continue; }
+        let start = s.raw_offset as usize;
+        let end = (start + s.raw_size as usize).min(data.raw.len());
+        if start >= end { continue; }
+        let sec = &data.raw[start..end];
+        let sec_va_base = data.pe.image_base + s.virtual_address as u64;
+
+        if data.pe.arch == 64 {
+            for i in 0..sec.len().saturating_sub(5) {
+                let b0 = sec[i];
+                let b1 = sec.get(i + 1).copied().unwrap_or(0);
+                if (b0 == 0xFF && (b1 == 0x15 || b1 == 0x25)) && i + 6 <= sec.len() {
+                    let rel32 = i32::from_le_bytes(sec[i + 2..i + 6].try_into().unwrap());
+                    let instr_va = sec_va_base + i as u64;
+                    let slot_va = (instr_va as i64 + 6 + rel32 as i64) as u64;
+                    if let Some((dll_base, func_name)) = import_slots.get(&slot_va) {
+                        push_indexed_site(
+                            imports.entry((dll_base.clone(), func_name.clone())).or_default(),
+                            CallSite {
+                                rva: s.virtual_address + i as u32,
+                                pattern: if b1 == 0x15 { "CALL [IAT]" } else { "JMP [IAT]" }.to_owned(),
+                            },
+                            data,
+                        );
+                    }
+                    continue;
+                }
+
+                if (b0 == 0xE8 || b0 == 0xE9) && i + 5 <= sec.len() {
+                    let rel32 = i32::from_le_bytes(sec[i + 1..i + 5].try_into().unwrap());
+                    let instr_va = sec_va_base + i as u64;
+                    let target_va = (instr_va as i64 + 5 + rel32 as i64) as u64;
+                    push_indexed_site(
+                        direct.entry(target_va).or_default(),
+                        CallSite {
+                            rva: s.virtual_address + i as u32,
+                            pattern: if b0 == 0xE8 { "CALL rel32" } else { "JMP rel32 (tail)" }.to_owned(),
+                        },
+                        data,
+                    );
+                }
+            }
+        } else {
+            for i in 0..sec.len().saturating_sub(5) {
+                let b0 = sec[i];
+                let b1 = sec.get(i + 1).copied().unwrap_or(0);
+                if (b0 == 0xFF && (b1 == 0x15 || b1 == 0x25)) && i + 6 <= sec.len() {
+                    let slot_va = u32::from_le_bytes(sec[i + 2..i + 6].try_into().unwrap()) as u64;
+                    if let Some((dll_base, func_name)) = import_slots.get(&slot_va) {
+                        push_indexed_site(
+                            imports.entry((dll_base.clone(), func_name.clone())).or_default(),
+                            CallSite {
+                                rva: s.virtual_address + i as u32,
+                                pattern: if b1 == 0x15 { "CALL [IAT]" } else { "JMP [IAT]" }.to_owned(),
+                            },
+                            data,
+                        );
+                    }
+                    continue;
+                }
+
+                if (b0 == 0xE8 || b0 == 0xE9) && i + 5 <= sec.len() {
+                    let rel32 = i32::from_le_bytes(sec[i + 1..i + 5].try_into().unwrap());
+                    let instr_va = sec_va_base + i as u64;
+                    let target_va = (instr_va as i64 + 5 + rel32 as i64) as u64;
+                    push_indexed_site(
+                        direct.entry(target_va).or_default(),
+                        CallSite {
+                            rva: s.virtual_address + i as u32,
+                            pattern: if b0 == 0xE8 { "CALL rel32" } else { "JMP rel32 (tail)" }.to_owned(),
+                        },
+                        data,
+                    );
+                }
+            }
+        }
+    }
+
+    let direct = direct.into_iter().map(|(va, grouped)| {
+        let mut callers: Vec<IndexedCaller> = grouped.into_values().collect();
+        callers.sort_by(|a, b| a.func.key().cmp(&b.func.key()));
+        (va, callers)
+    }).collect();
+
+    let imports = imports.into_iter().map(|(key, grouped)| {
+        let mut callers: Vec<IndexedCaller> = grouped.into_values().collect();
+        callers.sort_by(|a, b| a.func.key().cmp(&b.func.key()));
+        (key, callers)
+    }).collect();
+
+    ReverseCallIndex { direct, imports }
+}
+
 pub fn system_dirs(cfg: &FollowScanConfig) -> Vec<PathBuf> {
     let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
     let mut dirs = Vec::new();
     if !cfg.no_system {
         dirs.push(PathBuf::from(&windir).join("System32"));
-        dirs.push(PathBuf::from(&windir).join("Sysnative"));
-    }
-    if !cfg.no_wow64 {
-        dirs.push(PathBuf::from(&windir).join("SysWOW64"));
     }
     dirs
 }
@@ -112,7 +380,7 @@ pub fn find_target_dll(name: &str, cfg: &FollowScanConfig) -> Result<PathBuf, St
             return c.canonicalize().map_err(|e| e.to_string());
         }
     }
-    Err(format!("'{}' not found in system32, SysWOW64, PATH; use --path or provide full path", name))
+    Err(format!("'{}' not found in System32 or PATH; use --path or provide full path", name))
 }
 
 pub fn build_scan_list(cfg: &FollowScanConfig, target_dll: &Path) -> Vec<PathBuf> {
@@ -203,89 +471,15 @@ fn glob_inner(p: &[char], n: &[char]) -> bool {
 const SCN_CODE: u32 = 0x0000_0020;
 const SCN_EXEC: u32 = 0x2000_0000;
 
-pub fn find_iat_call_sites(raw: &[u8], pe: &crate::pe::PeFile, iat_slot_va: u64) -> Vec<CallSite> {
-    let mut sites = Vec::new();
-    for s in &pe.sections {
-        if s.characteristics & (SCN_CODE | SCN_EXEC) == 0 { continue; }
-        if s.raw_offset == 0 || s.raw_size == 0 { continue; }
-        let start = s.raw_offset as usize;
-        let end = (start + s.raw_size as usize).min(raw.len());
-        if start >= end { continue; }
-        let sec = &raw[start..end];
-        let sec_va_base = pe.image_base + s.virtual_address as u64;
-
-        if pe.arch == 64 {
-            for i in 0..sec.len().saturating_sub(5) {
-                let b0 = sec[i];
-                let b1 = sec.get(i + 1).copied().unwrap_or(0);
-                let is_call = b0 == 0xFF && b1 == 0x15;
-                let is_jmp = b0 == 0xFF && b1 == 0x25;
-                if (!is_call && !is_jmp) || i + 6 > sec.len() { continue; }
-                let rel32 = i32::from_le_bytes(sec[i + 2..i + 6].try_into().unwrap());
-                let instr_va = sec_va_base + i as u64;
-                let target = (instr_va as i64 + 6 + rel32 as i64) as u64;
-                if target != iat_slot_va { continue; }
-                sites.push(CallSite {
-                    rva: s.virtual_address + i as u32,
-                    pattern: if is_call { "CALL [IAT]" } else { "JMP [IAT]" }.to_owned(),
-                });
-            }
-        } else {
-            let slot32 = iat_slot_va as u32;
-            for i in 0..sec.len().saturating_sub(5) {
-                let b0 = sec[i];
-                let b1 = sec.get(i + 1).copied().unwrap_or(0);
-                let is_call = b0 == 0xFF && b1 == 0x15;
-                let is_jmp = b0 == 0xFF && b1 == 0x25;
-                if (!is_call && !is_jmp) || i + 6 > sec.len() { continue; }
-                let abs32 = u32::from_le_bytes(sec[i + 2..i + 6].try_into().unwrap());
-                if abs32 != slot32 { continue; }
-                sites.push(CallSite {
-                    rva: s.virtual_address + i as u32,
-                    pattern: if is_call { "CALL [IAT]" } else { "JMP [IAT]" }.to_owned(),
-                });
-            }
-        }
-    }
-    sites
-}
-
-pub fn find_direct_call_sites(raw: &[u8], pe: &crate::pe::PeFile, target_va: u64) -> Vec<CallSite> {
-    let mut sites = Vec::new();
-    for s in &pe.sections {
-        if s.characteristics & (SCN_CODE | SCN_EXEC) == 0 { continue; }
-        if s.raw_offset == 0 || s.raw_size == 0 { continue; }
-        let start = s.raw_offset as usize;
-        let end = (start + s.raw_size as usize).min(raw.len());
-        if start >= end { continue; }
-        let sec = &raw[start..end];
-        let sec_va_base = pe.image_base + s.virtual_address as u64;
-
-        for i in 0..sec.len().saturating_sub(4) {
-            let b = sec[i];
-            if b != 0xE8 && b != 0xE9 { continue; }
-            if i + 5 > sec.len() { continue; }
-            let rel32 = i32::from_le_bytes(sec[i + 1..i + 5].try_into().unwrap());
-            let instr_va = sec_va_base + i as u64;
-            let calc_target = (instr_va as i64 + 5 + rel32 as i64) as u64;
-            if calc_target != target_va { continue; }
-            sites.push(CallSite {
-                rva: s.virtual_address + i as u32,
-                pattern: if b == 0xE8 { "CALL rel32" } else { "JMP rel32 (tail)" }.to_owned(),
-            });
-        }
-    }
-    sites
-}
-
-pub fn scan_dll_for_callers(
-    dll_path: &Path,
+pub fn scan_image_for_callers(
+    image: &ScanImage,
     target: &crate::follow_trace::FuncRef,
     target_arch: u32,
     cfg: &FollowScanConfig,
 ) -> Vec<Caller> {
-    let Ok(raw) = std::fs::read(dll_path) else { return Vec::new() };
-    let Ok(pe) = parse_pe(&raw) else { return Vec::new() };
+    let Some(data) = image.data() else { return Vec::new() };
+    let Some(index) = image.index() else { return Vec::new() };
+    let pe = &data.pe;
 
     let arch_match = match cfg.arch.as_str() {
         "x86" | "32" => pe.arch == 32,
@@ -294,54 +488,20 @@ pub fn scan_dll_for_callers(
     };
     if !arch_match { return Vec::new(); }
 
-    let image_base = pe.image_base;
-    let exports = read_exports(&pe, &raw);
-    let dll_base = dll_path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-    let target_base = Path::new(&target.dll_path)
-        .file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-    let is_same_dll = dll_base == target_base;
+    let dll_base = &data.dll_base_lower;
+    let target_base = normalize_dll_base(&target.dll_path);
+    let is_same_dll = dll_base == &target_base;
 
-    let mut all_sites = Vec::new();
-    if !is_same_dll {
-        if let Some(slot_va) = find_iat_slot_va(&pe, &raw, &target.dll_path, &target.name) {
-            all_sites.extend(find_iat_call_sites(&raw, &pe, slot_va));
-        }
+    let callers = if is_same_dll {
+        index.direct.get(&target.va)
     } else {
-        all_sites.extend(find_direct_call_sites(&raw, &pe, target.va));
-    }
-    if all_sites.is_empty() { return Vec::new(); }
+        index.imports.get(&(target_base, target.name.clone()))
+    };
 
-    let dll_name = dll_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-    let dll_path_str = dll_path.to_string_lossy().to_string();
-    let mut map: std::collections::HashMap<u32, (crate::follow_trace::FuncRef, Vec<CallSite>)> =
-        std::collections::HashMap::new();
-
-    for site in all_sites {
-        let (owner_rva, func_ref) = if let Some(e) = attribute_to_func(site.rva, &exports) {
-            (e.rva, crate::follow_trace::FuncRef {
-                dll: dll_name.clone(),
-                dll_path: dll_path_str.clone(),
-                name: e.name.clone(),
-                rva: e.rva,
-                va: image_base + e.rva as u64,
-                is_internal: false,
-            })
-        } else {
-            (site.rva, crate::follow_trace::FuncRef {
-                dll: dll_name.clone(),
-                dll_path: dll_path_str.clone(),
-                name: format!("sub_{:08X}", site.rva),
-                rva: site.rva,
-                va: image_base + site.rva as u64,
-                is_internal: true,
-            })
-        };
-
-        let entry = map.entry(owner_rva).or_insert_with(|| (func_ref, Vec::new()));
-        entry.1.push(site);
-    }
-
-    let mut result: Vec<Caller> = map.into_values().map(|(f, s)| Caller { func: f, sites: s }).collect();
-    result.sort_by(|a, b| a.func.key().cmp(&b.func.key()));
-    result
+    callers
+        .map(|matches| matches.iter().map(|entry| Caller {
+            func: entry.func.clone(),
+            sites: entry.sites.clone(),
+        }).collect())
+        .unwrap_or_default()
 }

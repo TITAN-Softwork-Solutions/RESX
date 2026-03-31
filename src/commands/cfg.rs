@@ -4,7 +4,6 @@ use crate::cfgview::render_cfg_colored;
 use crate::color::Colors;
 use crate::config::Config;
 use crate::disasm::disassemble_at;
-use crate::output::print_sep;
 use crate::pdb::load_pdb_symbols;
 use crate::pe::{parse_pe, read_exports};
 use crate::search::find_dll_path;
@@ -77,12 +76,10 @@ pub fn run(dll_arg: &str, func_arg: &str, cfg: &Config, w: &mut dyn Write, c: &C
         write!(w, "{}", c.dim(followed.trim_end())).ok();
         writeln!(w).ok();
     }
-    print_sep(w, c, 88);
     let graph = render_cfg_colored(&insns, image_base, c);
     write!(w, "{}", graph).ok();
     if !graph.ends_with('\n') {
         writeln!(w).ok();
     }
-    print_sep(w, c, 88);
     Ok(())
 }

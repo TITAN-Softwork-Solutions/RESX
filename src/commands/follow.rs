@@ -3,7 +3,7 @@ use std::io::Write;
 use crate::color::Colors;
 use crate::config::Config;
 use crate::follow_output::{count_nodes, node_to_json, print_call_flat, print_call_list, print_call_tree};
-use crate::follow_scan::{build_scan_list, find_target_dll, FollowScanConfig};
+use crate::follow_scan::{build_scan_list, find_target_dll, FollowScanConfig, ScanImage};
 use crate::follow_trace::{build_call_tree, FuncRef, TraceCtx};
 use crate::pdb::load_pdb_symbol;
 use crate::pe::{parse_pe, read_exports};
@@ -45,21 +45,22 @@ pub fn run(dll_arg: &str, func_arg: &str, cfg: &Config, w: &mut dyn Write, c: &C
     }
 
     let scan_paths = build_scan_list(&scan_cfg, &dll_path);
+    let scan_images: Vec<ScanImage> = scan_paths.into_iter().map(ScanImage::new).collect();
     if !cfg.quiet {
-        writeln!(w, "{}", c.info(&format!("Scan list: {} file(s)  |  depth: {}  |  workers: {}", scan_paths.len(), scan_cfg.depth, scan_cfg.workers))).ok();
+        writeln!(w, "{}", c.info(&format!("Scan list: {} file(s)  |  depth: {}  |  workers: {}", scan_images.len(), scan_cfg.depth, scan_cfg.workers))).ok();
     }
 
     let mut visited = std::collections::HashMap::new();
     visited.insert(target.key(), true);
     let ctx = TraceCtx {
         cfg: &scan_cfg,
-        scan_paths: &scan_paths,
+        scan_images: &scan_images,
         target_arch: pe.arch,
         visited: std::sync::Mutex::new(visited),
         total: std::sync::Mutex::new(0usize),
     };
 
-    let root = build_call_tree(target.clone(), 0, &ctx, w, c);
+    let root = build_call_tree(target.clone(), &ctx, w, c);
     let (total_refs, unique_fns) = count_nodes(&root);
 
     if !cfg.quiet && !cfg.json {
