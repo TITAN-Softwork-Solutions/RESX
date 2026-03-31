@@ -2,3 +2,4 @@
 /resx.exe
 /*.exe
 /*.pdb
+/Cargo.lock

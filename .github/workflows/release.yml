@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package artifacts
+        shell: powershell
+        run: |
+          $version = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF.Substring(10) } else { 'manual' }
+          $artifactRoot = "dist"
+          $artifactName = "resx-$version-windows-x86_64"
+          $artifactDir = Join-Path $artifactRoot $artifactName
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          Copy-Item target\release\resx.exe $artifactDir\
+          Copy-Item README.md $artifactDir\
+          Copy-Item COMMANDS.md $artifactDir\
+          Compress-Archive -Path "$artifactDir\*" -DestinationPath "$artifactRoot\$artifactName.zip" -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: resx-release-windows-x86_64
+          path: dist/*.zip
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

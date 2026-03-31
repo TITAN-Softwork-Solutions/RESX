@@ -1,4 +1,3 @@
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -7,22 +6,22 @@ use rayon::prelude::*;
 
 use crate::color::Colors;
 use crate::config::Config;
-use crate::output::{print_sep, ProgressBar};
+use crate::output::ProgressBar;
 use crate::pdb::load_pdb_symbol;
 use crate::pe::{parse_pe, read_exports};
 use crate::thunk::follow_jmp_thunk;
 
 #[derive(Debug)]
 pub struct LocateResult {
-    pub dll:      String,
+    pub dll: String,
     pub dll_path: String,
-    pub name:     String,
-    pub ordinal:  u32,
-    pub rva:      u32,
-    pub source:   String,
-    pub is_stub:  bool,
+    pub name: String,
+    pub ordinal: u32,
+    pub rva: u32,
+    pub source: String,
+    pub is_stub: bool,
     pub stub_dll: String,
-    pub stub_fn:  String,
+    pub stub_fn: String,
     pub from_pdb: bool,
     pub is_kernel: bool,
     pub is_syscall_stub: bool,
@@ -36,8 +35,20 @@ pub fn run(func_name: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Resu
     let show_all = cfg.locate_all || cfg.locate_all_deep;
 
     if !cfg.quiet {
-        let mode = if deep { "exports and symbols" } else { "exports" };
-        writeln!(w, "{}", c.info(&format!("Searching for '{}' across system DLLs via {}...", func_name, mode))).ok();
+        let mode = if deep {
+            "exports and symbols"
+        } else {
+            "exports"
+        };
+        writeln!(
+            w,
+            "{}",
+            c.info(&format!(
+                "Searching for '{}' across system DLLs via {}...",
+                func_name, mode
+            ))
+        )
+        .ok();
     }
 
     let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
@@ -91,47 +102,63 @@ pub fn run(func_name: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Resu
     annotate_syscall_targets(&mut results);
 
     if results.is_empty() {
-        writeln!(w, "{}", c.warn(&format!(
-            "'{}' not found in any system DLL", func_name
-        ))).ok();
+        writeln!(
+            w,
+            "{}",
+            c.warn(&format!("'{}' not found in any system DLL", func_name))
+        )
+        .ok();
         return Ok(());
     }
 
     if cfg.json {
         use serde_json::json;
-        let j: Vec<_> = results.iter().map(|r| json!({
-            "dll":      r.dll,
-            "dll_path": r.dll_path,
-            "name":     r.name,
-            "ordinal":  r.ordinal,
-            "rva":      format!("0x{:08X}", r.rva),
-            "source":   r.source,
-            "from_pdb": r.from_pdb,
-            "kernel":   r.is_kernel,
-            "syscall_stub": r.is_syscall_stub,
-            "syscall_number": r.syscall_number.map(|n| format!("0x{:X}", n)),
-            "kernel_component": r.kernel_component,
-            "kernel_symbol": r.kernel_symbol,
-            "stub":     r.is_stub,
-            "stub_dll": r.stub_dll,
-            "stub_fn":  r.stub_fn,
-        })).collect();
+        let j: Vec<_> = results
+            .iter()
+            .map(|r| {
+                json!({
+                    "dll":      r.dll,
+                    "dll_path": r.dll_path,
+                    "name":     r.name,
+                    "ordinal":  r.ordinal,
+                    "rva":      format!("0x{:08X}", r.rva),
+                    "source":   r.source,
+                    "from_pdb": r.from_pdb,
+                    "kernel":   r.is_kernel,
+                    "syscall_stub": r.is_syscall_stub,
+                    "syscall_number": r.syscall_number.map(|n| format!("0x{:X}", n)),
+                    "kernel_component": r.kernel_component,
+                    "kernel_symbol": r.kernel_symbol,
+                    "stub":     r.is_stub,
+                    "stub_dll": r.stub_dll,
+                    "stub_fn":  r.stub_fn,
+                })
+            })
+            .collect();
         let out = serde_json::to_string_pretty(&j).unwrap_or_default();
         writeln!(w, "{}", out).ok();
     } else {
         writeln!(w).ok();
-        writeln!(w, "{}", c.bold(&c.b_yellow(&format!("Locations of '{}':", func_name)))).ok();
-        print_sep(w, c, 72);
+        writeln!(
+            w,
+            "{}",
+            c.bold(&c.b_yellow(&format!("Locations of '{}':", func_name)))
+        )
+        .ok();
         for r in &results {
             print_locate_result(w, c, r);
         }
-        print_sep(w, c, 72);
         let hint = if deep {
             "use --locate-all-sym to show all DLLs"
         } else {
             "use --locate-all to show all DLLs"
         };
-        writeln!(w, "{}", c.dim(&format!("  {} result(s)  |  {}", results.len(), hint))).ok();
+        writeln!(
+            w,
+            "{}",
+            c.dim(&format!("  {} result(s)  |  {}", results.len(), hint))
+        )
+        .ok();
     }
     Ok(())
 }
@@ -169,7 +196,11 @@ fn collect_search_tiers(search_dirs: &[PathBuf]) -> Vec<Vec<PathBuf>> {
 }
 
 fn path_priority_key(path: &Path) -> (u8, u8) {
-    let ext_rank = match path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+    let ext_rank = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+    {
         Some(ext) if ext == "dll" => 0,
         Some(ext) if ext == "sys" => 1,
         Some(ext) if ext == "exe" => 2,
@@ -188,6 +219,7 @@ fn path_priority_key(path: &Path) -> (u8, u8) {
     (dir_rank, ext_rank)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_export_hits(
     tiers: &[Vec<PathBuf>],
     func_name: &str,
@@ -199,14 +231,14 @@ fn stream_export_hits(
     matched_paths: &mut std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let total: usize = tiers.iter().map(|tier| tier.len()).sum();
-    let pb = ProgressBar::new(total, c.on && !cfg.quiet);
+    let pb = ProgressBar::new(total, c.on && !cfg.quiet, c.on);
     for tier in tiers {
-        let mut tier_hits = scan_export_bucket(
-            tier,
-            func_name,
-            &pb,
-        );
-        tier_hits.sort_by(|a, b| a.dll_path.to_ascii_lowercase().cmp(&b.dll_path.to_ascii_lowercase()));
+        let mut tier_hits = scan_export_bucket(tier, func_name, &pb);
+        tier_hits.sort_by(|a, b| {
+            a.dll_path
+                .to_ascii_lowercase()
+                .cmp(&b.dll_path.to_ascii_lowercase())
+        });
         for hit in tier_hits {
             matched_paths.insert(path_key(Path::new(&hit.dll_path)));
             results.push(hit);
@@ -224,7 +256,8 @@ fn scan_export_bucket(
     func_name: &str,
     pb: &ProgressBar,
 ) -> Vec<LocateResult> {
-    all_paths.par_iter()
+    all_paths
+        .par_iter()
         .flat_map_iter(|dll_path| {
             let label = dll_path.file_name().unwrap_or_default().to_string_lossy();
             let raw = match std::fs::read(dll_path) {
@@ -249,7 +282,11 @@ fn scan_export_bucket(
                 }
 
                 let mut res = LocateResult {
-                    dll: dll_path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                    dll: dll_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
                     dll_path: dll_path.to_string_lossy().to_string(),
                     name: e.name.clone(),
                     ordinal: e.ordinal,
@@ -285,6 +322,7 @@ fn scan_export_bucket(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_symbol_hits(
     tiers: &[Vec<PathBuf>],
     func_name: &str,
@@ -296,18 +334,10 @@ fn stream_symbol_hits(
     matched_paths: &mut std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let total: usize = tiers.iter().map(|tier| tier.len()).sum();
-    let pb = ProgressBar::new(total, c.on && !cfg.quiet);
+    let pb = ProgressBar::new(total, c.on && !cfg.quiet, c.on);
     for tier in tiers {
         let before = results.len();
-        scan_symbol_bucket(
-            tier,
-            func_name,
-            show_all,
-            cfg,
-            results,
-            matched_paths,
-            &pb,
-        )?;
+        scan_symbol_bucket(tier, func_name, show_all, cfg, results, matched_paths, &pb)?;
         if !show_all && results.len() > before {
             break;
         }
@@ -352,7 +382,11 @@ fn scan_symbol_bucket(
             cfg.verbose,
         ) {
             let res = LocateResult {
-                dll: dll_path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                dll: dll_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
                 dll_path: dll_path_str,
                 name: func_name.to_owned(),
                 ordinal: 0,
@@ -365,7 +399,11 @@ fn scan_symbol_bucket(
                 is_kernel: is_kernel_image(dll_path),
                 is_syscall_stub: false,
                 syscall_number: detect_syscall_stub(&raw, &pe, rva).and_then(|s| {
-                    if s.is_syscall_stub { s.syscall_number } else { None }
+                    if s.is_syscall_stub {
+                        s.syscall_number
+                    } else {
+                        None
+                    }
                 }),
                 kernel_component: String::new(),
                 kernel_symbol: String::new(),
@@ -426,7 +464,8 @@ fn print_locate_result(w: &mut dyn Write, c: &Colors, r: &LocateResult) {
         r.rva,
         source,
         stub
-    ).ok();
+    )
+    .ok();
 }
 
 fn path_key(path: &Path) -> String {
@@ -438,7 +477,8 @@ fn glob_system_binaries(dir: &PathBuf) -> Result<Vec<PathBuf>, std::io::Error> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        let matches = path.extension()
+        let matches = path
+            .extension()
             .and_then(|e| e.to_str())
             .map(|e| {
                 e.eq_ignore_ascii_case("dll")
@@ -459,7 +499,11 @@ struct SyscallStubInfo {
     syscall_number: Option<u32>,
 }
 
-fn detect_syscall_stub(raw: &[u8], pe: &crate::pe::PeFile, start_rva: u32) -> Option<SyscallStubInfo> {
+fn detect_syscall_stub(
+    raw: &[u8],
+    pe: &crate::pe::PeFile,
+    start_rva: u32,
+) -> Option<SyscallStubInfo> {
     let off = pe.rva_to_offset(start_rva)?;
     if off >= raw.len() {
         return None;
@@ -480,7 +524,10 @@ fn detect_syscall_stub(raw: &[u8], pe: &crate::pe::PeFile, start_rva: u32) -> Op
         match instr.mnemonic() {
             Mnemonic::Mov if instr.op_count() >= 2 && instr.op0_kind() == OpKind::Register => {
                 let dst = instr.op0_register();
-                if matches!(dst, Register::EAX | Register::RAX | Register::AX | Register::AL) {
+                if matches!(
+                    dst,
+                    Register::EAX | Register::RAX | Register::AX | Register::AL
+                ) {
                     syscall_number = match instr.op1_kind() {
                         OpKind::Immediate8 => Some(instr.immediate8to32() as u32),
                         OpKind::Immediate16 => Some(instr.immediate16() as u32),
@@ -492,11 +539,17 @@ fn detect_syscall_stub(raw: &[u8], pe: &crate::pe::PeFile, start_rva: u32) -> Op
                 }
             }
             Mnemonic::Syscall | Mnemonic::Sysenter => {
-                return Some(SyscallStubInfo { is_syscall_stub: true, syscall_number });
+                return Some(SyscallStubInfo {
+                    is_syscall_stub: true,
+                    syscall_number,
+                });
             }
             Mnemonic::Int => {
                 if instr.immediate8() == 0x2E {
-                    return Some(SyscallStubInfo { is_syscall_stub: true, syscall_number });
+                    return Some(SyscallStubInfo {
+                        is_syscall_stub: true,
+                        syscall_number,
+                    });
                 }
             }
             Mnemonic::Ret => break,
@@ -508,7 +561,8 @@ fn detect_syscall_stub(raw: &[u8], pe: &crate::pe::PeFile, start_rva: u32) -> Op
 }
 
 fn annotate_syscall_targets(results: &mut [LocateResult]) {
-    let kernel_hits: Vec<(String, String)> = results.iter()
+    let kernel_hits: Vec<(String, String)> = results
+        .iter()
         .filter(|r| r.is_kernel)
         .map(|r| (r.dll.clone(), r.name.clone()))
         .collect();
@@ -516,7 +570,9 @@ fn annotate_syscall_targets(results: &mut [LocateResult]) {
     for result in results.iter_mut().filter(|r| r.is_syscall_stub) {
         let candidates = kernel_name_candidates(&result.name);
         if let Some((dll, name)) = kernel_hits.iter().find(|(_, hit_name)| {
-            candidates.iter().any(|candidate| hit_name.eq_ignore_ascii_case(candidate))
+            candidates
+                .iter()
+                .any(|candidate| hit_name.eq_ignore_ascii_case(candidate))
         }) {
             result.kernel_component = dll.clone();
             result.kernel_symbol = name.clone();
@@ -535,14 +591,25 @@ fn kernel_name_candidates(name: &str) -> Vec<String> {
 }
 
 fn is_kernel_image(path: &Path) -> bool {
-    let file = path.file_name().and_then(|f| f.to_str()).unwrap_or_default();
+    let file = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default();
     let lower_file = file.to_ascii_lowercase();
     if lower_file.ends_with(".sys") {
         return true;
     }
     matches!(
         lower_file.as_str(),
-        "ntoskrnl.exe" | "ntkrnlmp.exe" | "ntkrnlpa.exe" | "ntkrpamp.exe" |
-        "win32kbase.sys" | "win32kfull.sys" | "win32k.sys"
-    ) || path.to_string_lossy().to_ascii_lowercase().contains("\\system32\\drivers\\")
+        "ntoskrnl.exe"
+            | "ntkrnlmp.exe"
+            | "ntkrnlpa.exe"
+            | "ntkrpamp.exe"
+            | "win32kbase.sys"
+            | "win32kfull.sys"
+            | "win32k.sys"
+    ) || path
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .contains("\\system32\\drivers\\")
 }

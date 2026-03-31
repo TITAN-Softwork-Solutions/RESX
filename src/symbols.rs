@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use crate::pdb::PdbSymbol;
 use crate::pe::Export;
@@ -18,15 +19,24 @@ pub struct SymbolMatch {
     pub displacement: u64,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct SymbolIndex {
+#[derive(Debug, Default)]
+struct SymbolIndexInner {
     exact: HashMap<u64, ResolvedSymbol>,
     ordered: BTreeMap<u64, ResolvedSymbol>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SymbolIndex {
+    inner: Arc<SymbolIndexInner>,
+}
+
 impl SymbolIndex {
-    pub fn from_exports_and_pdb(exports: &[Export], pdb_symbols: &[PdbSymbol], image_base: u64) -> Self {
-        let mut index = Self::default();
+    pub fn from_exports_and_pdb(
+        exports: &[Export],
+        pdb_symbols: &[PdbSymbol],
+        image_base: u64,
+    ) -> Self {
+        let mut inner = SymbolIndexInner::default();
 
         for e in exports {
             if e.name.is_empty() {
@@ -39,7 +49,7 @@ impl SymbolIndex {
                 va: image_base + e.rva as u64,
                 size: 0,
             };
-            index.insert(sym);
+            insert_symbol(&mut inner, sym);
         }
 
         for s in pdb_symbols {
@@ -50,14 +60,16 @@ impl SymbolIndex {
                 va: s.va,
                 size: s.size,
             };
-            index.insert(sym);
+            insert_symbol(&mut inner, sym);
         }
 
-        index
+        Self {
+            inner: Arc::new(inner),
+        }
     }
 
     pub fn exact_name(&self, address: u64) -> Option<&str> {
-        self.exact.get(&address).map(|s| s.name.as_str())
+        self.inner.exact.get(&address).map(|s| s.name.as_str())
     }
 
     pub fn describe(&self, address: u64) -> Option<String> {
@@ -75,14 +87,14 @@ impl SymbolIndex {
     }
 
     pub fn lookup(&self, address: u64) -> Option<SymbolMatch> {
-        if let Some(sym) = self.exact.get(&address) {
+        if let Some(sym) = self.inner.exact.get(&address) {
             return Some(SymbolMatch {
                 symbol: sym.clone(),
                 displacement: 0,
             });
         }
 
-        let (_, sym) = self.ordered.range(..=address).next_back()?;
+        let (_, sym) = self.inner.ordered.range(..=address).next_back()?;
         let displacement = address.saturating_sub(sym.va);
         let within = if sym.size > 0 {
             displacement < sym.size
@@ -99,13 +111,17 @@ impl SymbolIndex {
             displacement,
         })
     }
+}
 
-    fn insert(&mut self, sym: ResolvedSymbol) {
-        let keep_existing = self.exact.get(&sym.va).map(|old| score(old) >= score(&sym)).unwrap_or(false);
-        if !keep_existing {
-            self.exact.insert(sym.va, sym.clone());
-            self.ordered.insert(sym.va, sym);
-        }
+fn insert_symbol(index: &mut SymbolIndexInner, sym: ResolvedSymbol) {
+    let keep_existing = index
+        .exact
+        .get(&sym.va)
+        .map(|old| score(old) >= score(&sym))
+        .unwrap_or(false);
+    if !keep_existing {
+        index.exact.insert(sym.va, sym.clone());
+        index.ordered.insert(sym.va, sym);
     }
 }
 

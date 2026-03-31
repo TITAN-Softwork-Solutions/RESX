@@ -13,7 +13,11 @@ pub struct IntelliFinding {
     pub value: String,
 }
 
-pub fn analyze_image(raw: &[u8], imports: &[ImportDll], insns: Option<&[Instruction]>) -> Vec<IntelliFinding> {
+pub fn analyze_image(
+    raw: &[u8],
+    imports: &[ImportDll],
+    insns: Option<&[Instruction]>,
+) -> Vec<IntelliFinding> {
     let strings = extract_ascii_strings(raw, 6);
     let mut findings = Vec::new();
     findings.extend(scan_strings(&strings));
@@ -55,21 +59,39 @@ fn scan_strings(strings: &[String]) -> Vec<IntelliFinding> {
         if looks_like_windows_path(s) {
             findings.push(finding("filesystem", "filepath", "string", s));
         }
-        if contains_any(&lower, &[
-            "sessionserver.mojang.com",
-            "api.minecraftservices.com",
-            "textures.minecraft.net",
-            "yggdrasil",
-            "joinserver",
-            "hasjoined",
-            "minecraft",
-        ]) {
+        if contains_any(
+            &lower,
+            &[
+                "sessionserver.mojang.com",
+                "api.minecraftservices.com",
+                "textures.minecraft.net",
+                "yggdrasil",
+                "joinserver",
+                "hasjoined",
+                "minecraft",
+            ],
+        ) {
             findings.push(finding("ttp", "minecraft-session", "string", s));
         }
-        if contains_any(&lower, &["encrypt", "decrypt", "aes", "rsa", "chacha", "bcrypt", "crypt"]) {
+        if contains_any(
+            &lower,
+            &[
+                "encrypt", "decrypt", "aes", "rsa", "chacha", "bcrypt", "crypt",
+            ],
+        ) {
             findings.push(finding("crypto", "encrypt-decrypt", "string", s));
         }
-        if contains_any(&lower, &["stream", "fstream", "stringstream", "istream", "ostream", "pipe"]) {
+        if contains_any(
+            &lower,
+            &[
+                "stream",
+                "fstream",
+                "stringstream",
+                "istream",
+                "ostream",
+                "pipe",
+            ],
+        ) {
             findings.push(finding("io", "stream", "string", s));
         }
     }
@@ -80,10 +102,16 @@ fn scan_imports(imports: &[ImportDll]) -> Vec<IntelliFinding> {
     let mut findings = Vec::new();
     for dll in imports {
         let dll_lower = dll.dll.to_ascii_lowercase();
-        if matches!(dll_lower.as_str(), "ws2_32.dll" | "winhttp.dll" | "wininet.dll" | "urlmon.dll" | "iphlpapi.dll") {
+        if matches!(
+            dll_lower.as_str(),
+            "ws2_32.dll" | "winhttp.dll" | "wininet.dll" | "urlmon.dll" | "iphlpapi.dll"
+        ) {
             findings.push(finding("network", "network-stack", "import-dll", &dll.dll));
         }
-        if matches!(dll_lower.as_str(), "crypt32.dll" | "bcrypt.dll" | "ncrypt.dll" | "advapi32.dll") {
+        if matches!(
+            dll_lower.as_str(),
+            "crypt32.dll" | "bcrypt.dll" | "ncrypt.dll" | "advapi32.dll"
+        ) {
             findings.push(finding("crypto", "crypto-stack", "import-dll", &dll.dll));
         }
         for entry in &dll.entries {
@@ -107,10 +135,17 @@ fn scan_imports(imports: &[ImportDll]) -> Vec<IntelliFinding> {
             {
                 findings.push(finding("crypto", "crypto-api", "import", name));
             }
-            if lower.contains("stream") || lower.contains("file") || lower.contains("readfile") || lower.contains("writefile") {
+            if lower.contains("stream")
+                || lower.contains("file")
+                || lower.contains("readfile")
+                || lower.contains("writefile")
+            {
                 findings.push(finding("io", "stream-file-api", "import", name));
             }
-            if lower.contains("createprocess") || lower.contains("winexec") || lower.contains("shellexecute") {
+            if lower.contains("createprocess")
+                || lower.contains("winexec")
+                || lower.contains("shellexecute")
+            {
                 findings.push(finding("execution", "process-launch", "import", name));
             }
         }
@@ -127,10 +162,25 @@ fn scan_instructions(insns: &[Instruction]) -> Vec<IntelliFinding> {
             format!("{} {}", insn.text, insn.comment)
         };
         let lower = text.to_ascii_lowercase();
-        if contains_any(&lower, &["encrypt", "decrypt", "aes", "rsa", "chacha", "bcrypt", "crypt"]) {
+        if contains_any(
+            &lower,
+            &[
+                "encrypt", "decrypt", "aes", "rsa", "chacha", "bcrypt", "crypt",
+            ],
+        ) {
             findings.push(finding("crypto", "crypto-code-ref", "instruction", &text));
         }
-        if contains_any(&lower, &["stream", "fstream", "stringstream", "istream", "ostream", "pipe"]) {
+        if contains_any(
+            &lower,
+            &[
+                "stream",
+                "fstream",
+                "stringstream",
+                "istream",
+                "ostream",
+                "pipe",
+            ],
+        ) {
             findings.push(finding("io", "stream-code-ref", "instruction", &text));
         }
         if lower.contains("http://")
@@ -169,7 +219,13 @@ fn dedup_findings(findings: Vec<IntelliFinding>) -> Vec<IntelliFinding> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
     for finding in findings {
-        let key = format!("{}|{}|{}|{}", finding.category, finding.rule, finding.source, finding.value.to_ascii_lowercase());
+        let key = format!(
+            "{}|{}|{}|{}",
+            finding.category,
+            finding.rule,
+            finding.source,
+            finding.value.to_ascii_lowercase()
+        );
         if seen.insert(key) {
             out.push(finding);
         }
@@ -203,9 +259,15 @@ fn contains_host_port(text: &str) -> bool {
 }
 
 fn split_tokens(text: &str) -> Vec<&str> {
-    text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'))
-        .filter(|part| !part.is_empty())
-        .collect()
+    text.split(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+            )
+    })
+    .filter(|part| !part.is_empty())
+    .collect()
 }
 
 fn is_ipv4_token(token: &str) -> bool {
@@ -240,9 +302,14 @@ fn is_domain_token(token: &str) -> bool {
         return false;
     }
     let tld = labels.last().copied().unwrap_or("");
-    let allowed = ["com", "net", "org", "io", "gg", "xyz", "ru", "cc", "me", "app", "dev", "site", "co", "top", "info", "biz"];
+    let allowed = [
+        "com", "net", "org", "io", "gg", "xyz", "ru", "cc", "me", "app", "dev", "site", "co",
+        "top", "info", "biz",
+    ];
     allowed.contains(&tld.to_ascii_lowercase().as_str())
-        && labels.iter().all(|label| !label.is_empty() && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels.iter().all(|label| {
+            !label.is_empty() && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
 }
 
 fn is_host_port_token(token: &str) -> bool {
@@ -270,9 +337,12 @@ fn is_discord_token(text: &str) -> bool {
         if parts.len() != 3 {
             return false;
         }
-        is_base64ish(parts[0]) && parts[0].len() == 24
-            && is_base64ish(parts[1]) && parts[1].len() == 6
-            && is_base64ish(parts[2]) && (25..=110).contains(&parts[2].len())
+        is_base64ish(parts[0])
+            && parts[0].len() == 24
+            && is_base64ish(parts[1])
+            && parts[1].len() == 6
+            && is_base64ish(parts[2])
+            && (25..=110).contains(&parts[2].len())
     })
 }
 
@@ -292,5 +362,8 @@ fn looks_like_windows_path(text: &str) -> bool {
 }
 
 fn is_base64ish(text: &str) -> bool {
-    !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }

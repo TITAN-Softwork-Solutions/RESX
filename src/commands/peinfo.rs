@@ -97,15 +97,24 @@ struct AnomalyJson {
 }
 
 pub fn run(dll_arg: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Result<(), String> {
-    let mut progress = StageProgress::new(6, !cfg.quiet && !cfg.json);
+    let mut progress = StageProgress::new(6, !cfg.quiet && !cfg.json, c.on);
     if !cfg.quiet && !cfg.json {
-        writeln!(w, "{}", c.info(&format!("Collecting PE info for '{}'...", dll_arg))).ok();
+        writeln!(
+            w,
+            "{}",
+            c.info(&format!("Collecting PE info for '{}'...", dll_arg))
+        )
+        .ok();
     }
 
     let dll_path = find_dll_path(dll_arg, cfg)?;
     progress.tick("locating target image");
     let dll_path_str = dll_path.to_string_lossy().to_string();
-    let file_name = dll_path.file_name().unwrap_or_else(|| OsStr::new("")).to_string_lossy().to_string();
+    let file_name = dll_path
+        .file_name()
+        .unwrap_or_else(|| OsStr::new(""))
+        .to_string_lossy()
+        .to_string();
     let raw = std::fs::read(&dll_path).map_err(|e| format!("read file: {}", e))?;
     progress.tick("reading image");
     let pe = parse_pe(&raw).map_err(|e| e.0)?;
@@ -163,7 +172,12 @@ pub fn run(dll_arg: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Result
             sections: pe.sections.iter().map(to_section_json).collect(),
             anomalies: pe.anomalies.iter().map(to_anomaly_json).collect(),
         };
-        writeln!(w, "{}", serde_json::to_string_pretty(&out).unwrap_or_default()).ok();
+        writeln!(
+            w,
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_default()
+        )
+        .ok();
         return Ok(());
     }
 
@@ -178,13 +192,38 @@ pub fn run(dll_arg: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Result
     print_kv(w, c, "ImageBase", &format!("0x{:016X}", pe.image_base));
     print_kv(w, c, "EntryPoint", &format!("0x{:08X}", pe.entry_point));
     print_kv(w, c, "SizeOfImage", &format!("0x{:08X}", pe.size_of_image));
-    print_kv(w, c, "SizeOfHeaders", &format!("0x{:08X}", pe.size_of_headers));
-    print_kv(w, c, "SectionAlignment", &format!("0x{:08X}", pe.section_alignment));
-    print_kv(w, c, "FileAlignment", &format!("0x{:08X}", pe.file_alignment));
+    print_kv(
+        w,
+        c,
+        "SizeOfHeaders",
+        &format!("0x{:08X}", pe.size_of_headers),
+    );
+    print_kv(
+        w,
+        c,
+        "SectionAlignment",
+        &format!("0x{:08X}", pe.section_alignment),
+    );
+    print_kv(
+        w,
+        c,
+        "FileAlignment",
+        &format!("0x{:08X}", pe.file_alignment),
+    );
     print_kv(w, c, "Checksum", &format!("0x{:08X}", pe.checksum));
     print_kv(w, c, "Subsystem", &format!("0x{:04X}", pe.subsystem));
-    print_kv(w, c, "DLLCharacteristics", &format!("0x{:04X}", pe.dll_characteristics));
-    print_kv(w, c, "COFFCharacteristics", &format!("0x{:04X}", pe.coff_characteristics));
+    print_kv(
+        w,
+        c,
+        "DLLCharacteristics",
+        &format!("0x{:04X}", pe.dll_characteristics),
+    );
+    print_kv(
+        w,
+        c,
+        "COFFCharacteristics",
+        &format!("0x{:04X}", pe.coff_characteristics),
+    );
     print_kv(w, c, "Exports", &exports.len().to_string());
     print_kv(w, c, "ImportDLLs", &imports.len().to_string());
     print_kv(w, c, "Imports", &import_count.to_string());
@@ -206,7 +245,12 @@ pub fn run(dll_arg: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Result
 
     writeln!(w).ok();
     writeln!(w, "{}", c.bold(&c.b_mag("Signer / Authenticode:"))).ok();
-    print_kv(w, c, "Status", &blank_as_unknown(&metadata.signature_status));
+    print_kv(
+        w,
+        c,
+        "Status",
+        &blank_as_unknown(&metadata.signature_status),
+    );
     print_optional_kv(w, c, "Subject", &metadata.signer_subject);
     print_optional_kv(w, c, "Issuer", &metadata.signer_issuer);
     print_optional_kv(w, c, "Thumbprint", &metadata.signer_thumbprint);

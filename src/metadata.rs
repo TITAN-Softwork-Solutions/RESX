@@ -95,7 +95,7 @@ $sig = Get-AuthenticodeSignature -LiteralPath $path
         let stdout = String::from_utf8_lossy(&output.stdout);
         let parsed: FileMetadataJson = serde_json::from_str(stdout.trim())
             .map_err(|e| format!("parse metadata json: {}", e))?;
-        return Ok(FileMetadata {
+        Ok(FileMetadata {
             file_description: parsed.file_description,
             company_name: parsed.company_name,
             file_version: parsed.file_version,
@@ -109,7 +109,7 @@ $sig = Get-AuthenticodeSignature -LiteralPath $path
             signer_subject: parsed.signer_subject,
             signer_issuer: parsed.signer_issuer,
             signer_thumbprint: parsed.signer_thumbprint,
-        });
+        })
     }
 
     #[cfg(not(windows))]

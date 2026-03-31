@@ -19,13 +19,22 @@ mod win {
     #[link(name = "kernel32")]
     extern "system" {
         fn GetModuleHandleW(lpModuleName: *const u16) -> *mut c_void;
-        fn LoadLibraryExW(lpLibFileName: *const u16, hFile: *mut c_void, dwFlags: u32) -> *mut c_void;
+        fn LoadLibraryExW(
+            lpLibFileName: *const u16,
+            hFile: *mut c_void,
+            dwFlags: u32,
+        ) -> *mut c_void;
         fn FreeLibrary(hLibModule: *mut c_void) -> i32;
     }
 
     const DONT_RESOLVE_DLL_REFERENCES: u32 = 0x00000001;
 
-    pub fn check_prologue(dll_path: &str, target_rva: u32, disk_bytes: &[u8], compare_len: usize) -> Result<EdrCheckResult, String> {
+    pub fn check_prologue(
+        dll_path: &str,
+        target_rva: u32,
+        disk_bytes: &[u8],
+        compare_len: usize,
+    ) -> Result<EdrCheckResult, String> {
         if compare_len == 0 || disk_bytes.is_empty() {
             return Ok(EdrCheckResult {
                 loaded_from_memory: false,
@@ -43,7 +52,13 @@ mod win {
         let mut should_free = false;
         let mut module = unsafe { GetModuleHandleW(wide.as_ptr()) };
         if module.is_null() {
-            module = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), DONT_RESOLVE_DLL_REFERENCES) };
+            module = unsafe {
+                LoadLibraryExW(
+                    wide.as_ptr(),
+                    std::ptr::null_mut(),
+                    DONT_RESOLVE_DLL_REFERENCES,
+                )
+            };
             if module.is_null() {
                 return Ok(EdrCheckResult {
                     loaded_from_memory,
@@ -62,7 +77,8 @@ mod win {
         let len = compare_len.min(disk_bytes.len());
         let memory_ptr = (module as usize)
             .checked_add(target_rva as usize)
-            .ok_or_else(|| "in-memory RVA overflow".to_owned())? as *const u8;
+            .ok_or_else(|| "in-memory RVA overflow".to_owned())?
+            as *const u8;
         let memory_bytes = unsafe { std::slice::from_raw_parts(memory_ptr, len) }.to_vec();
         let disk = disk_bytes[..len].to_vec();
         let mut diff_offsets = Vec::new();
@@ -73,7 +89,9 @@ mod win {
         }
 
         if should_free {
-            unsafe { FreeLibrary(module); }
+            unsafe {
+                FreeLibrary(module);
+            }
         }
 
         Ok(EdrCheckResult {
@@ -88,7 +106,10 @@ mod win {
     }
 
     fn to_wide(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 }
 
@@ -96,7 +117,12 @@ mod win {
 pub use win::check_prologue;
 
 #[cfg(not(windows))]
-pub fn check_prologue(_dll_path: &str, _target_rva: u32, _disk_bytes: &[u8], _compare_len: usize) -> Result<EdrCheckResult, String> {
+pub fn check_prologue(
+    _dll_path: &str,
+    _target_rva: u32,
+    _disk_bytes: &[u8],
+    _compare_len: usize,
+) -> Result<EdrCheckResult, String> {
     Ok(EdrCheckResult {
         loaded_from_memory: false,
         in_memory_available: false,

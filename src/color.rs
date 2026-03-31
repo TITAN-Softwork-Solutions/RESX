@@ -1,4 +1,3 @@
-
 #[derive(Clone, Copy)]
 pub struct Colors {
     pub on: bool,
@@ -17,18 +16,42 @@ impl Colors {
         }
     }
 
-    pub fn bold(&self, s: &str) -> String     { self.apply("\x1b[1m", s) }
-    pub fn dim(&self, s: &str) -> String      { self.apply("\x1b[2m", s) }
-    pub fn green(&self, s: &str) -> String    { self.apply("\x1b[32m", s) }
-    pub fn yellow(&self, s: &str) -> String   { self.apply("\x1b[33m", s) }
-    pub fn magenta(&self, s: &str) -> String  { self.apply("\x1b[35m", s) }
-    pub fn cyan(&self, s: &str) -> String     { self.apply("\x1b[36m", s) }
-    pub fn b_red(&self, s: &str) -> String    { self.apply("\x1b[91m", s) }
-    pub fn b_yellow(&self, s: &str) -> String { self.apply("\x1b[93m", s) }
-    pub fn b_blue(&self, s: &str) -> String   { self.apply("\x1b[94m", s) }
-    pub fn b_mag(&self, s: &str) -> String    { self.apply("\x1b[95m", s) }
-    pub fn b_cyan(&self, s: &str) -> String   { self.apply("\x1b[96m", s) }
-    pub fn b_white(&self, s: &str) -> String  { self.apply("\x1b[97m", s) }
+    pub fn bold(&self, s: &str) -> String {
+        self.apply("\x1b[1m", s)
+    }
+    pub fn dim(&self, s: &str) -> String {
+        self.apply("\x1b[2m", s)
+    }
+    pub fn green(&self, s: &str) -> String {
+        self.apply("\x1b[32m", s)
+    }
+    pub fn yellow(&self, s: &str) -> String {
+        self.apply("\x1b[33m", s)
+    }
+    pub fn magenta(&self, s: &str) -> String {
+        self.apply("\x1b[35m", s)
+    }
+    pub fn cyan(&self, s: &str) -> String {
+        self.apply("\x1b[36m", s)
+    }
+    pub fn b_red(&self, s: &str) -> String {
+        self.apply("\x1b[91m", s)
+    }
+    pub fn b_yellow(&self, s: &str) -> String {
+        self.apply("\x1b[93m", s)
+    }
+    pub fn b_blue(&self, s: &str) -> String {
+        self.apply("\x1b[94m", s)
+    }
+    pub fn b_mag(&self, s: &str) -> String {
+        self.apply("\x1b[95m", s)
+    }
+    pub fn b_cyan(&self, s: &str) -> String {
+        self.apply("\x1b[96m", s)
+    }
+    pub fn b_white(&self, s: &str) -> String {
+        self.apply("\x1b[97m", s)
+    }
 
     pub fn info(&self, s: &str) -> String {
         format!("{} {}", self.apply("\x1b[96m", "[*]"), s)

@@ -2,13 +2,21 @@ use std::io::Write;
 
 use crate::color::Colors;
 use crate::config::Config;
-use crate::follow_output::{count_nodes, node_to_json, print_call_flat, print_call_list, print_call_tree};
-use crate::follow_scan::{build_scan_list, find_target_dll, FollowScanConfig};
+use crate::follow_output::{
+    count_nodes, node_to_json, print_call_flat, print_call_list, print_call_tree,
+};
+use crate::follow_scan::{build_scan_list, find_target_dll, FollowScanConfig, ScanImage};
 use crate::follow_trace::{build_call_tree, FuncRef, TraceCtx};
 use crate::pdb::load_pdb_symbol;
 use crate::pe::{parse_pe, read_exports};
 
-pub fn run(dll_arg: &str, func_arg: &str, cfg: &Config, w: &mut dyn Write, c: &Colors) -> Result<(), String> {
+pub fn run(
+    dll_arg: &str,
+    func_arg: &str,
+    cfg: &Config,
+    w: &mut dyn Write,
+    c: &Colors,
+) -> Result<(), String> {
     let scan_cfg = FollowScanConfig::from_config(cfg);
 
     if !cfg.quiet {
@@ -24,42 +32,81 @@ pub fn run(dll_arg: &str, func_arg: &str, cfg: &Config, w: &mut dyn Write, c: &C
     let exports = read_exports(&pe, &raw);
 
     if !cfg.quiet {
-        writeln!(w, "{}", c.info(&format!("Architecture: x{}  |  ImageBase: 0x{:X}", pe.arch, pe.image_base))).ok();
+        writeln!(
+            w,
+            "{}",
+            c.info(&format!(
+                "Architecture: x{}  |  ImageBase: 0x{:X}",
+                pe.arch, pe.image_base
+            ))
+        )
+        .ok();
     }
 
-    let dll_name = dll_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let dll_name = dll_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let dll_path_str = dll_path.to_string_lossy().to_string();
-    let (target_name, target_rva, is_internal) =
-        resolve_target(&exports, &dll_path_str, &dll_name, func_arg, pe.image_base, cfg, w, c)?;
-    let target = FuncRef {
-        dll: dll_name.clone(),
-        dll_path: dll_path_str.clone(),
-        name: target_name.clone(),
-        rva: target_rva,
-        va: pe.image_base + target_rva as u64,
+    let (target_name, target_rva, is_internal) = resolve_target(
+        &exports,
+        &dll_path_str,
+        &dll_name,
+        func_arg,
+        pe.image_base,
+        cfg,
+        w,
+        c,
+    )?;
+    let target = FuncRef::new(
+        dll_name.clone(),
+        dll_path_str.clone(),
+        target_name.clone(),
+        target_rva,
+        pe.image_base + target_rva as u64,
         is_internal,
-    };
+    );
 
     if !cfg.quiet {
-        writeln!(w, "{}", c.ok(&format!("Target: {}!{}  RVA:0x{:08X}  VA:0x{:016X}", target.dll, target.name, target.rva, target.va))).ok();
+        writeln!(
+            w,
+            "{}",
+            c.ok(&format!(
+                "Target: {}!{}  RVA:0x{:08X}  VA:0x{:016X}",
+                target.dll, target.name, target.rva, target.va
+            ))
+        )
+        .ok();
     }
 
     let scan_paths = build_scan_list(&scan_cfg, &dll_path);
+    let scan_images: Vec<ScanImage> = scan_paths.into_iter().map(ScanImage::new).collect();
     if !cfg.quiet {
-        writeln!(w, "{}", c.info(&format!("Scan list: {} file(s)  |  depth: {}  |  workers: {}", scan_paths.len(), scan_cfg.depth, scan_cfg.workers))).ok();
+        writeln!(
+            w,
+            "{}",
+            c.info(&format!(
+                "Scan list: {} file(s)  |  depth: {}  |  workers: {}",
+                scan_images.len(),
+                scan_cfg.depth,
+                scan_cfg.workers
+            ))
+        )
+        .ok();
     }
 
-    let mut visited = std::collections::HashMap::new();
-    visited.insert(target.key(), true);
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(target.key().to_owned());
     let ctx = TraceCtx {
         cfg: &scan_cfg,
-        scan_paths: &scan_paths,
+        scan_images: &scan_images,
         target_arch: pe.arch,
         visited: std::sync::Mutex::new(visited),
-        total: std::sync::Mutex::new(0usize),
+        total: std::sync::atomic::AtomicUsize::new(0usize),
     };
 
-    let root = build_call_tree(target.clone(), 0, &ctx, w, c);
+    let root = build_call_tree(target.clone(), &ctx, w, c);
     let (total_refs, unique_fns) = count_nodes(&root);
 
     if !cfg.quiet && !cfg.json {
@@ -67,7 +114,12 @@ pub fn run(dll_arg: &str, func_arg: &str, cfg: &Config, w: &mut dyn Write, c: &C
     }
 
     if cfg.json {
-        writeln!(w, "{}", serde_json::to_string_pretty(&node_to_json(&root)).unwrap_or_default()).ok();
+        writeln!(
+            w,
+            "{}",
+            serde_json::to_string_pretty(&node_to_json(&root)).unwrap_or_default()
+        )
+        .ok();
     } else {
         match cfg.follow_format.as_str() {
             "flat" => print_call_flat(w, &root, &scan_cfg, c),
@@ -80,7 +132,15 @@ pub fn run(dll_arg: &str, func_arg: &str, cfg: &Config, w: &mut dyn Write, c: &C
 
         if !cfg.quiet {
             writeln!(w).ok();
-            writeln!(w, "{}", c.dim(&format!("  {} total caller references  |  {} unique functions", total_refs, unique_fns))).ok();
+            writeln!(
+                w,
+                "{}",
+                c.dim(&format!(
+                    "  {} total caller references  |  {} unique functions",
+                    total_refs, unique_fns
+                ))
+            )
+            .ok();
         }
     }
 
@@ -99,6 +159,7 @@ fn find_export<'a>(exports: &'a [crate::pe::Export], name: &str) -> Option<&'a c
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_target(
     exports: &[crate::pe::Export],
     dll_path: &str,
@@ -127,10 +188,12 @@ fn resolve_target(
             cfg.verbose,
         ) {
             if !cfg.quiet {
-                writeln!(w, "{}", c.ok(&format!(
-                    "{} @ RVA 0x{:08X}  (from PDB)",
-                    func_arg, rva
-                ))).ok();
+                writeln!(
+                    w,
+                    "{}",
+                    c.ok(&format!("{} @ RVA 0x{:08X}  (from PDB)", func_arg, rva))
+                )
+                .ok();
             }
             return Ok((func_arg.to_string(), rva, true));
         }

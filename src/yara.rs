@@ -14,7 +14,8 @@ pub fn scan_file(target: &str, rule_files: &[String]) -> Result<Vec<YaraMatch>, 
         return Ok(Vec::new());
     }
 
-    let yara = find_yara_binary().ok_or_else(|| "YARA executable not found (looked for yara64.exe/yara.exe)".to_owned())?;
+    let yara = find_yara_binary()
+        .ok_or_else(|| "YARA executable not found (looked for yara64.exe/yara.exe)".to_owned())?;
     let mut out = Vec::new();
 
     for rule_file in rule_files {
@@ -66,7 +67,12 @@ fn parse_match_line(line: &str) -> YaraMatch {
 
 fn split_tags(head: &str) -> (String, Vec<String>) {
     if let Some((rule, tags)) = head.split_once('[') {
-        let tags = tags.trim_end_matches(']').split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+        let tags = tags
+            .trim_end_matches(']')
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
         (rule.to_owned(), tags)
     } else {
         (head.to_owned(), Vec::new())
