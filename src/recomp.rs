@@ -4,7 +4,12 @@ use crate::disasm::{is_jcc, Instruction};
 use crate::pe::Export;
 use crate::symbols::SymbolIndex;
 
-fn fmt_op(instr: &iced_x86::Instruction, op_idx: u32, image_base: u64, symbols: Option<&SymbolIndex>) -> String {
+fn fmt_op(
+    instr: &iced_x86::Instruction,
+    op_idx: u32,
+    image_base: u64,
+    symbols: Option<&SymbolIndex>,
+) -> String {
     if op_idx >= instr.op_count() {
         return String::new();
     }
@@ -56,7 +61,9 @@ fn fmt_op(instr: &iced_x86::Instruction, op_idx: u32, image_base: u64, symbols: 
             let scale = instr.memory_index_scale();
             let disp = instr.memory_displacement64() as i64;
 
-            let seg = if instr.memory_segment() != Register::None && instr.memory_segment() != Register::DS {
+            let seg = if instr.memory_segment() != Register::None
+                && instr.memory_segment() != Register::DS
+            {
                 format!("{:?}:", instr.memory_segment()).to_lowercase() + ":"
             } else {
                 String::new()
@@ -70,7 +77,11 @@ fn fmt_op(instr: &iced_x86::Instruction, op_idx: u32, image_base: u64, symbols: 
 
             let idx_s = if idx != Register::None {
                 let i = format!("{:?}", idx).to_lowercase();
-                if scale > 1 { format!("{}*{}", i, scale) } else { i }
+                if scale > 1 {
+                    format!("{}*{}", i, scale)
+                } else {
+                    i
+                }
             } else {
                 String::new()
             };
@@ -104,7 +115,12 @@ fn fmt_op(instr: &iced_x86::Instruction, op_idx: u32, image_base: u64, symbols: 
     }
 }
 
-fn jcc_condition(m: Mnemonic, prev_cmp: Option<&iced_x86::Instruction>, image_base: u64, symbols: Option<&SymbolIndex>) -> String {
+fn jcc_condition(
+    m: Mnemonic,
+    prev_cmp: Option<&iced_x86::Instruction>,
+    image_base: u64,
+    symbols: Option<&SymbolIndex>,
+) -> String {
     let Some(cmp_instr) = prev_cmp else {
         return match m {
             Mnemonic::Je => "ZF".to_owned(),
@@ -119,10 +135,15 @@ fn jcc_condition(m: Mnemonic, prev_cmp: Option<&iced_x86::Instruction>, image_ba
 
     let a = fmt_op(cmp_instr, 0, image_base, symbols);
     let b = fmt_op(cmp_instr, 1, image_base, symbols);
-    let is_self_test = cmp_instr.mnemonic() == Mnemonic::Test && a == b;
+    let is_test = cmp_instr.mnemonic() == Mnemonic::Test;
+    let test_expr = if a == b {
+        a.clone()
+    } else {
+        format!("({} & {})", a, b)
+    };
     match m {
-        Mnemonic::Je if is_self_test => format!("{} == 0", a),
-        Mnemonic::Jne if is_self_test => format!("{} != 0", a),
+        Mnemonic::Je if is_test => format!("{} == 0", test_expr),
+        Mnemonic::Jne if is_test => format!("{} != 0", test_expr),
         Mnemonic::Je => format!("{} == {}", a, b),
         Mnemonic::Jne => format!("{} != {}", a, b),
         Mnemonic::Ja => format!("(unsigned){} > (unsigned){}", a, b),
@@ -139,13 +160,21 @@ fn jcc_condition(m: Mnemonic, prev_cmp: Option<&iced_x86::Instruction>, image_ba
     }
 }
 
-pub fn recomp_c(insns: &[Instruction], exp: &Export, arch: u32, image_base: u64, symbols: Option<&SymbolIndex>, _cfg: &crate::config::Config) -> String {
+pub fn recomp_c(
+    insns: &[Instruction],
+    exp: &Export,
+    arch: u32,
+    image_base: u64,
+    symbols: Option<&SymbolIndex>,
+    _cfg: &crate::config::Config,
+) -> String {
     if insns.is_empty() {
         return "// No instructions to reconstruct.".to_owned();
     }
 
     let mut sb = String::new();
     let mut jump_targets: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let insn_rvas: std::collections::HashSet<u32> = insns.iter().map(|insn| insn.rva).collect();
     for insn in insns {
         if (insn.is_jmp || insn.is_jcc) && insn.call_target != 0 {
             let t_rva = insn.call_target.wrapping_sub(image_base) as u32;
@@ -185,17 +214,16 @@ pub fn recomp_c(insns: &[Instruction], exp: &Export, arch: u32, image_base: u64,
         let last = insns.last().unwrap();
         (last.rva - insns[0].rva) as usize + last.bytes.len()
     };
-    sb.push_str(&format!("// Size: ~{} bytes, {} instructions\n\n", size_bytes, insns.len()));
+    sb.push_str(&format!(
+        "// Size: ~{} bytes, {} instructions\n\n",
+        size_bytes,
+        insns.len()
+    ));
 
     let ret_type = "NTSTATUS";
     sb.push_str(&format!("{} {} {}(\n", ret_type, cc, exp.name));
     if used_params == 0 {
         sb.push_str("    void\n");
-    } else if arch == 64 {
-        for i in 0..used_params {
-            let sep = if i + 1 == used_params { "" } else { "," };
-            sb.push_str(&format!("    void* param_{}{} \n", i + 1, sep));
-        }
     } else {
         for i in 0..used_params {
             let sep = if i + 1 == used_params { "" } else { "," };
@@ -225,7 +253,11 @@ pub fn recomp_c(insns: &[Instruction], exp: &Export, arch: u32, image_base: u64,
             Mnemonic::Mov => format!("{} = {};", a0, a1),
             Mnemonic::Lea => format!("{} = &{};", a0, a1),
             Mnemonic::Xor => {
-                if a0 == a1 { format!("{} = 0;", a0) } else { format!("{} ^= {};", a0, a1) }
+                if a0 == a1 {
+                    format!("{} = 0;", a0)
+                } else {
+                    format!("{} ^= {};", a0, a1)
+                }
             }
             Mnemonic::Add => format!("{} += {};", a0, a1),
             Mnemonic::Sub => format!("{} -= {};", a0, a1),
@@ -239,22 +271,36 @@ pub fn recomp_c(insns: &[Instruction], exp: &Export, arch: u32, image_base: u64,
             Mnemonic::Inc => format!("{}++;", a0),
             Mnemonic::Dec => format!("{}--;", a0),
             Mnemonic::Imul | Mnemonic::Mul => {
-                if insn.iced.op_count() > 1 { format!("{} *= {};", a0, a1) } else { format!("mul({});", a0) }
+                if insn.iced.op_count() > 1 {
+                    format!("{} *= {};", a0, a1)
+                } else {
+                    format!("mul({});", a0)
+                }
             }
             Mnemonic::Push => format!("PUSH({});", a0),
             Mnemonic::Pop => format!("{} = POP();", a0),
             Mnemonic::Call => {
-                let target = if !insn.comment.is_empty() {
-                    insn.comment.clone()
-                } else if insn.call_target != 0 {
-                    format!("fn_0x{:X}", insn.call_target)
+                if insn.call_target != 0 {
+                    let t_rva = insn.call_target.wrapping_sub(image_base) as u32;
+                    if insn_rvas.contains(&t_rva) {
+                        format!("CALL_LOCAL(label_{:08X});", t_rva)
+                    } else if !insn.comment.is_empty() {
+                        format!("result = {}();", insn.comment)
+                    } else {
+                        format!("result = fn_0x{:X}();", insn.call_target)
+                    }
+                } else if !insn.comment.is_empty() {
+                    format!("result = {}();", insn.comment)
                 } else {
-                    a0.clone()
-                };
-                format!("result = {}();", target)
+                    format!("result = {}();", a0)
+                }
             }
             _ if crate::disasm::is_ret(m) => {
-                if arch == 64 { "return rax;".to_owned() } else { "return eax;".to_owned() }
+                if arch == 64 {
+                    "return rax;".to_owned()
+                } else {
+                    "return eax;".to_owned()
+                }
             }
             Mnemonic::Jmp => {
                 if insn.call_target != 0 {
@@ -293,17 +339,41 @@ pub fn recomp_c(insns: &[Instruction], exp: &Export, arch: u32, image_base: u64,
 
         if matches!(m, Mnemonic::Cmp | Mnemonic::Test) {
             prev_cmp = Some(insn);
-        } else if !is_jcc(m) {
+        } else if !is_jcc(m) && !preserves_flags(m) {
             prev_cmp = None;
         }
 
         const STMT_WIDTH: usize = 52;
-        let pad = if stmt.len() < STMT_WIDTH { STMT_WIDTH - stmt.len() } else { 0 };
-        sb.push_str(&format!("    {}{}  // {}\n", stmt, " ".repeat(pad), orig_asm));
+        let pad = if stmt.len() < STMT_WIDTH {
+            STMT_WIDTH - stmt.len()
+        } else {
+            0
+        };
+        sb.push_str(&format!(
+            "    {}{}  // {}\n",
+            stmt,
+            " ".repeat(pad),
+            orig_asm
+        ));
     }
 
     sb.push_str("}\n");
     sb
+}
+
+fn preserves_flags(m: Mnemonic) -> bool {
+    matches!(
+        m,
+        Mnemonic::Mov
+            | Mnemonic::Movsx
+            | Mnemonic::Movsxd
+            | Mnemonic::Movzx
+            | Mnemonic::Lea
+            | Mnemonic::Push
+            | Mnemonic::Pop
+            | Mnemonic::Jmp
+            | Mnemonic::Nop
+    )
 }
 
 fn absolute_memory_address(instr: &iced_x86::Instruction) -> Option<u64> {

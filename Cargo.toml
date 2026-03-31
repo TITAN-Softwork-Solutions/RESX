@@ -2,7 +2,8 @@
 name = "resx"
 version = "1.0.0"
 edition = "2021"
-description = "Resolve exports and symbols in Windows DLLs — TitanToolchain"
+authors = ["TITAN Softwork Solutions"]
+description = "Windows binary recon CLI for exports, PDB-backed symbols, CFG recovery, and triage"
 
 [dependencies]
 iced-x86 = "1"

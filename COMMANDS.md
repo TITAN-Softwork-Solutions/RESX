@@ -1,5 +1,11 @@
 # COMMANDS
 
+## Identity
+
+- Name: `RESX`
+- Author: `TITAN Softwork Solutions`
+- Version: `resx version` or `resx --version`
+
 ## Core
 
 - `resx dump <dll> <function>`
@@ -18,32 +24,85 @@
 - `resx locate-sym <name>`
 - `resx locate-all-sym <name>`
 - `resx yara <dll> <rule.yar>`
+- `resx update`
 
-## Common Flags
+## Dump And Analysis Flags
 
+- `--at <rva>`
+- `--ordinal <n>`
 - `--recomp`
 - `--c-out <file>`
 - `--cfg text`
-- `--intelli`
-- `--hookchk`
-- `--edrchk`
+- `--funcs`
+- `--funcs-depth <n>`
 - `--xrefs`
 - `--strings`
+- `--edrchk`
+- `--hookchk`
+- `--intelli`
 - `--follow-jmp`
+- `--no-follow-jmp`
+- `--rebase <addr>`
+
+## Symbol Flags
+
 - `--pdb <file>`
 - `--sym-path <path>`
 - `--sym-server <url>`
+- `--no-pdb`
+
+## Caller Tracing Flags
+
+- `--depth <n>`
+- `--max-callers <n>`
+- `--max-total <n>`
+- `--format tree|flat|list`
+- `--show-rva`
+- `--show-site`
+- `--filter-dll <text>`
+- `--scan-dir <dir>`
+- `--scan-dll <dll>`
+- `--scan-exe`
+- `--include <glob>`
+- `--exclude <glob>`
+- `--max-dll-size <mb>`
+- `--workers <n>`
+
+## Global Flags
+
+- `--path <dir>`
+- `--no-system`
+- `--no-cwd`
+- `--no-path`
+- `--arch <auto|x86|x64>`
+- `--bytes`
+- `--no-bytes`
+- `--show-offsets`
+- `--intel`
+- `--att`
 - `--json`
 - `--out <file>`
+- `--color`
+- `--no-color`
 - `--verbose`
 - `--quiet`
+- `--example`
+
+## Newer Output Areas
+
+- `dump --cfg text` can recover and render `Switch Map` sections for jump-table dispatchers.
+- `dump --recomp` emits corrected bit-test branches and better local-call placeholders.
+- `syms --verbose` can show exact PDB identity/load diagnostics, including RSDS-derived kernel PDB names.
+- `dump` can resolve internal names from enumerated PDB symbols when exports do not contain the target.
 
 ## Examples
 
 ```powershell
 resx dump ntdll.dll NtOpenProcess --cfg text --hookchk
-resx dump suspicious.dll --intelli
-resx dump suspicious.dll WinMain --intelli --hookchk --cfg text --strings --xrefs
-resx callers blackbird.sys BLACKBIRDNtAllocateVirtualMemoryHookStub
+resx dump ntoskrnl.exe KiSystemCall64 --cfg text --funcs --recomp
+resx dump ntoskrnl.exe NtQuerySystemInformation --cfg text
+resx syms ntoskrnl.exe --verbose
+resx callers blackbird.sys BLACKBIRDNtAllocateVirtualMemoryHookStub --depth 2
 resx locate-all-sym NtWriteVirtualMemory
+resx update
 ```

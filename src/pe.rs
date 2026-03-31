@@ -1,10 +1,8 @@
-
 use std::fmt;
 
 const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 const IMAGE_SCN_MEM_READ: u32 = 0x4000_0000;
 const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
-
 
 #[derive(Debug, Clone)]
 pub struct PeSection {
@@ -48,7 +46,8 @@ impl PeSection {
         match self.name.to_ascii_lowercase().as_str() {
             ".text" | "text" => "RX",
             ".data" | "data" | ".bss" | "bss" | ".tls" | "tls" => "RW",
-            ".rdata" | "rdata" | ".pdata" | "pdata" | ".edata" | "edata" | ".rsrc" | "rsrc" | ".reloc" | "reloc" => "R",
+            ".rdata" | "rdata" | ".pdata" | "pdata" | ".edata" | "edata" | ".rsrc" | "rsrc"
+            | ".reloc" | "reloc" => "R",
             ".idata" | "idata" => "R/RW",
             _ => "varies",
         }
@@ -74,7 +73,8 @@ impl PeSection {
 
         match name.as_str() {
             ".text" | "text" if prot.contains('W') => Some(".text is writable".to_owned()),
-            ".rdata" | "rdata" | ".pdata" | "pdata" | ".edata" | "edata" | ".rsrc" | "rsrc" | ".reloc" | "reloc"
+            ".rdata" | "rdata" | ".pdata" | "pdata" | ".edata" | "edata" | ".rsrc" | "rsrc"
+            | ".reloc" | "reloc"
                 if prot.contains('W') || prot.contains('X') =>
             {
                 Some(format!("{} has unexpected {}", self.name, prot))
@@ -137,7 +137,6 @@ pub struct ImportDll {
     pub entries: Vec<ImportEntry>,
 }
 
-
 #[derive(Debug)]
 pub struct PeError(pub String);
 impl fmt::Display for PeError {
@@ -149,7 +148,6 @@ impl std::error::Error for PeError {}
 macro_rules! pe_err {
     ($($arg:tt)*) => { PeError(format!($($arg)*)) }
 }
-
 
 pub fn read_u16(raw: &[u8], off: usize) -> u16 {
     if off + 2 > raw.len() {
@@ -176,10 +174,12 @@ pub fn read_cstr(raw: &[u8], off: usize) -> String {
     if off >= raw.len() {
         return String::new();
     }
-    let end = raw[off..].iter().position(|&b| b == 0).unwrap_or(raw.len() - off);
+    let end = raw[off..]
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(raw.len() - off);
     String::from_utf8_lossy(&raw[off..off + end]).into_owned()
 }
-
 
 pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
     if raw.len() < 64 {
@@ -199,7 +199,11 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
 
     let mut anomalies = Vec::new();
     if e_lfanew < 0x40 {
-        anomalies.push(anomaly("warn", "header", format!("e_lfanew is unusually small: 0x{:X}", e_lfanew)));
+        anomalies.push(anomaly(
+            "warn",
+            "header",
+            format!("e_lfanew is unusually small: 0x{:X}", e_lfanew),
+        ));
     }
 
     let coff_off = e_lfanew + 4;
@@ -214,9 +218,17 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
     let opt_hdr_size = read_u16(raw, coff_off + 16) as usize;
 
     if num_sections == 0 {
-        anomalies.push(anomaly("high", "section-count", "PE has zero sections".to_owned()));
+        anomalies.push(anomaly(
+            "high",
+            "section-count",
+            "PE has zero sections".to_owned(),
+        ));
     } else if num_sections > 96 {
-        anomalies.push(anomaly("warn", "section-count", format!("PE has an unusually high section count: {}", num_sections)));
+        anomalies.push(anomaly(
+            "warn",
+            "section-count",
+            format!("PE has an unusually high section count: {}", num_sections),
+        ));
     }
 
     let opt_hdr_off = coff_off + 20;
@@ -225,48 +237,60 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
     }
 
     let pe_magic = read_u16(raw, opt_hdr_off);
-    let (arch, image_base, num_data_dirs, data_dir_off, entry_point, section_alignment, file_alignment, size_of_image, size_of_headers, checksum, subsystem, dll_characteristics) =
-        match pe_magic {
-            0x020B => {
-                if opt_hdr_off + 112 > raw.len() {
-                    return Err(pe_err!("PE32+ optional header too small"));
-                }
-                (
-                    64u32,
-                    read_u64(raw, opt_hdr_off + 24),
-                    read_u32(raw, opt_hdr_off + 108) as usize,
-                    opt_hdr_off + 112,
-                    read_u32(raw, opt_hdr_off + 16),
-                    read_u32(raw, opt_hdr_off + 32),
-                    read_u32(raw, opt_hdr_off + 36),
-                    read_u32(raw, opt_hdr_off + 56),
-                    read_u32(raw, opt_hdr_off + 60),
-                    read_u32(raw, opt_hdr_off + 64),
-                    read_u16(raw, opt_hdr_off + 68),
-                    read_u16(raw, opt_hdr_off + 70),
-                )
+    let (
+        arch,
+        image_base,
+        num_data_dirs,
+        data_dir_off,
+        entry_point,
+        section_alignment,
+        file_alignment,
+        size_of_image,
+        size_of_headers,
+        checksum,
+        subsystem,
+        dll_characteristics,
+    ) = match pe_magic {
+        0x020B => {
+            if opt_hdr_off + 112 > raw.len() {
+                return Err(pe_err!("PE32+ optional header too small"));
             }
-            0x010B => {
-                if opt_hdr_off + 96 > raw.len() {
-                    return Err(pe_err!("PE32 optional header too small"));
-                }
-                (
-                    32u32,
-                    read_u32(raw, opt_hdr_off + 28) as u64,
-                    read_u32(raw, opt_hdr_off + 92) as usize,
-                    opt_hdr_off + 96,
-                    read_u32(raw, opt_hdr_off + 16),
-                    read_u32(raw, opt_hdr_off + 32),
-                    read_u32(raw, opt_hdr_off + 36),
-                    read_u32(raw, opt_hdr_off + 56),
-                    read_u32(raw, opt_hdr_off + 60),
-                    read_u32(raw, opt_hdr_off + 64),
-                    read_u16(raw, opt_hdr_off + 68),
-                    read_u16(raw, opt_hdr_off + 70),
-                )
+            (
+                64u32,
+                read_u64(raw, opt_hdr_off + 24),
+                read_u32(raw, opt_hdr_off + 108) as usize,
+                opt_hdr_off + 112,
+                read_u32(raw, opt_hdr_off + 16),
+                read_u32(raw, opt_hdr_off + 32),
+                read_u32(raw, opt_hdr_off + 36),
+                read_u32(raw, opt_hdr_off + 56),
+                read_u32(raw, opt_hdr_off + 60),
+                read_u32(raw, opt_hdr_off + 64),
+                read_u16(raw, opt_hdr_off + 68),
+                read_u16(raw, opt_hdr_off + 70),
+            )
+        }
+        0x010B => {
+            if opt_hdr_off + 96 > raw.len() {
+                return Err(pe_err!("PE32 optional header too small"));
             }
-            _ => return Err(pe_err!("Unknown PE magic: 0x{:04X}", pe_magic)),
-        };
+            (
+                32u32,
+                read_u32(raw, opt_hdr_off + 28) as u64,
+                read_u32(raw, opt_hdr_off + 92) as usize,
+                opt_hdr_off + 96,
+                read_u32(raw, opt_hdr_off + 16),
+                read_u32(raw, opt_hdr_off + 32),
+                read_u32(raw, opt_hdr_off + 36),
+                read_u32(raw, opt_hdr_off + 56),
+                read_u32(raw, opt_hdr_off + 60),
+                read_u32(raw, opt_hdr_off + 64),
+                read_u16(raw, opt_hdr_off + 68),
+                read_u16(raw, opt_hdr_off + 70),
+            )
+        }
+        _ => return Err(pe_err!("Unknown PE magic: 0x{:04X}", pe_magic)),
+    };
 
     let arch = match machine {
         0x8664 | 0xAA64 => 64,
@@ -277,16 +301,35 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
     };
 
     if file_alignment == 0 {
-        anomalies.push(anomaly("high", "alignment", "file alignment is zero".to_owned()));
+        anomalies.push(anomaly(
+            "high",
+            "alignment",
+            "file alignment is zero".to_owned(),
+        ));
     }
     if section_alignment == 0 {
-        anomalies.push(anomaly("high", "alignment", "section alignment is zero".to_owned()));
+        anomalies.push(anomaly(
+            "high",
+            "alignment",
+            "section alignment is zero".to_owned(),
+        ));
     }
     if size_of_headers == 0 || size_of_headers as usize > raw.len() {
-        anomalies.push(anomaly("warn", "headers", format!("SizeOfHeaders is suspicious: 0x{:X}", size_of_headers)));
+        anomalies.push(anomaly(
+            "warn",
+            "headers",
+            format!("SizeOfHeaders is suspicious: 0x{:X}", size_of_headers),
+        ));
     }
     if size_of_image < size_of_headers {
-        anomalies.push(anomaly("warn", "image-size", format!("SizeOfImage (0x{:X}) is smaller than SizeOfHeaders (0x{:X})", size_of_image, size_of_headers)));
+        anomalies.push(anomaly(
+            "warn",
+            "image-size",
+            format!(
+                "SizeOfImage (0x{:X}) is smaller than SizeOfHeaders (0x{:X})",
+                size_of_image, size_of_headers
+            ),
+        ));
     }
 
     let mut data_dirs = Vec::new();
@@ -294,7 +337,11 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
     for i in 0..max_dd {
         let off = data_dir_off + i * 8;
         if off + 8 > raw.len() {
-            anomalies.push(anomaly("warn", "data-directory", format!("data directory {} extends beyond optional header", i)));
+            anomalies.push(anomaly(
+                "warn",
+                "data-directory",
+                format!("data directory {} extends beyond optional header", i),
+            ));
             break;
         }
         let rva = read_u32(raw, off);
@@ -311,7 +358,11 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
     for i in 0..num_sections {
         let s = sections_off + i * 40;
         if s + 40 > raw.len() {
-            anomalies.push(anomaly("warn", "section-header", format!("section header {} is truncated", i)));
+            anomalies.push(anomaly(
+                "warn",
+                "section-header",
+                format!("section header {} is truncated", i),
+            ));
             break;
         }
 
@@ -325,16 +376,37 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
         if raw_size != 0 {
             let end = raw_offset.saturating_add(raw_size);
             if end as usize > raw.len() {
-                anomalies.push(anomaly("warn", "section-bounds", format!("section {} raw range 0x{:X}-0x{:X} exceeds file size 0x{:X}", name, raw_offset, end, raw.len())));
+                anomalies.push(anomaly(
+                    "warn",
+                    "section-bounds",
+                    format!(
+                        "section {} raw range 0x{:X}-0x{:X} exceeds file size 0x{:X}",
+                        name,
+                        raw_offset,
+                        end,
+                        raw.len()
+                    ),
+                ));
             } else {
                 raw_ranges.push((raw_offset, end, name.clone()));
             }
         }
         if virtual_address == 0 && name != ".text" {
-            anomalies.push(anomaly("info", "section-rva", format!("section {} starts at RVA 0", name)));
+            anomalies.push(anomaly(
+                "info",
+                "section-rva",
+                format!("section {} starts at RVA 0", name),
+            ));
         }
         if virtual_size == 0 && raw_size != 0 {
-            anomalies.push(anomaly("info", "section-size", format!("section {} has zero virtual size but non-zero raw size", name)));
+            anomalies.push(anomaly(
+                "info",
+                "section-size",
+                format!(
+                    "section {} has zero virtual size but non-zero raw size",
+                    name
+                ),
+            ));
         }
 
         let entropy = calc_entropy(raw, raw_offset as usize, raw_size as usize);
@@ -354,7 +426,14 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
         let (a_start, a_end, a_name) = &pair[0];
         let (b_start, _, b_name) = &pair[1];
         if b_start < a_end {
-            anomalies.push(anomaly("warn", "section-overlap", format!("raw sections {} and {} overlap (0x{:X}-0x{:X})", a_name, b_name, a_start, a_end)));
+            anomalies.push(anomaly(
+                "warn",
+                "section-overlap",
+                format!(
+                    "raw sections {} and {} overlap (0x{:X}-0x{:X})",
+                    a_name, b_name, a_start, a_end
+                ),
+            ));
         }
     }
 
@@ -379,7 +458,14 @@ pub fn parse_pe(raw: &[u8]) -> Result<PeFile, PeError> {
 
     if pe.entry_point != 0 && pe.rva_to_section(pe.entry_point).is_none() {
         let mut pe = pe;
-        pe.anomalies.push(anomaly("warn", "entry-point", format!("entry point RVA 0x{:08X} does not fall inside any section", pe.entry_point)));
+        pe.anomalies.push(anomaly(
+            "warn",
+            "entry-point",
+            format!(
+                "entry point RVA 0x{:08X} does not fall inside any section",
+                pe.entry_point
+            ),
+        ));
         return Ok(pe);
     }
 
@@ -403,10 +489,11 @@ impl PeFile {
     }
 
     pub fn header_corruption_detected(&self) -> bool {
-        self.anomalies.iter().any(|a| a.severity == "high" || a.severity == "warn")
+        self.anomalies
+            .iter()
+            .any(|a| a.severity == "high" || a.severity == "warn")
     }
 }
-
 
 pub fn read_exports(pe: &PeFile, raw: &[u8]) -> Vec<Export> {
     let (dir_rva, dir_size) = pe.data_dir(0);
@@ -466,7 +553,9 @@ pub fn read_exports(pe: &PeFile, raw: &[u8]) -> Vec<Export> {
         let ordinal = base + ord_idx as u32;
 
         let forward_to = if f_rva >= dir_rva && f_rva < dir_rva + dir_size {
-            pe.rva_to_offset(f_rva).map(|o| read_cstr(raw, o)).unwrap_or_default()
+            pe.rva_to_offset(f_rva)
+                .map(|o| read_cstr(raw, o))
+                .unwrap_or_default()
         } else {
             String::new()
         };
@@ -480,12 +569,12 @@ pub fn read_exports(pe: &PeFile, raw: &[u8]) -> Vec<Export> {
         });
     }
 
-    for i in 0..num_funcs {
-        if !name_set.contains(&i) && func_rvas[i] != 0 {
+    for (i, func_rva) in func_rvas.iter().copied().enumerate().take(num_funcs) {
+        if !name_set.contains(&i) && func_rva != 0 {
             exports.push(Export {
                 name: format!("#{}", base + i as u32),
                 ordinal: base + i as u32,
-                rva: func_rvas[i],
+                rva: func_rva,
                 forward_to: String::new(),
             });
         }
@@ -494,7 +583,6 @@ pub fn read_exports(pe: &PeFile, raw: &[u8]) -> Vec<Export> {
     exports.sort_by_key(|e| e.ordinal);
     exports
 }
-
 
 pub fn read_imports(pe: &PeFile, raw: &[u8]) -> Vec<ImportDll> {
     let (dir_rva, _) = pe.data_dir(1);
@@ -579,12 +667,14 @@ pub fn read_imports(pe: &PeFile, raw: &[u8]) -> Vec<ImportDll> {
             }
         }
 
-        dlls.push(ImportDll { dll: dll_name, entries });
+        dlls.push(ImportDll {
+            dll: dll_name,
+            entries,
+        });
     }
 
     dlls
 }
-
 
 pub fn resolve_iat_slot(pe: &PeFile, raw: &[u8], slot_rva: u32) -> Option<(String, String)> {
     let (dir_rva, _) = pe.data_dir(1);
@@ -661,7 +751,7 @@ pub fn resolve_iat_slot(pe: &PeFile, raw: &[u8], slot_rva: u32) -> Option<(Strin
     None
 }
 
-pub fn attribute_to_func<'a>(rva: u32, exports: &'a [Export]) -> Option<&'a Export> {
+pub fn attribute_to_func(rva: u32, exports: &[Export]) -> Option<&Export> {
     if exports.is_empty() {
         return None;
     }
@@ -671,92 +761,6 @@ pub fn attribute_to_func<'a>(rva: u32, exports: &'a [Export]) -> Option<&'a Expo
     } else {
         Some(&exports[idx - 1])
     }
-}
-
-pub fn find_iat_slot_va(pe: &PeFile, raw: &[u8], target_dll: &str, target_func: &str) -> Option<u64> {
-    let (dir_rva, _) = pe.data_dir(1);
-    if dir_rva == 0 {
-        return None;
-    }
-    let mut off = pe.rva_to_offset(dir_rva)?;
-    let ptr_size = if pe.arch == 64 { 8u32 } else { 4u32 };
-    let ord_flag_64 = 1u64 << 63;
-    let ord_flag_32 = 1u64 << 31;
-
-    let target_dll_base = target_dll
-        .rsplit(&['/', '\\'][..]).next().unwrap_or(target_dll)
-        .trim_end_matches(".dll")
-        .trim_end_matches(".DLL")
-        .to_lowercase();
-
-    loop {
-        if off + 20 > raw.len() {
-            break;
-        }
-        let ilt_rva = read_u32(raw, off);
-        let name_rva = read_u32(raw, off + 12);
-        let iat_rva = read_u32(raw, off + 16);
-        off += 20;
-        if name_rva == 0 && ilt_rva == 0 {
-            break;
-        }
-
-        let name_off = match pe.rva_to_offset(name_rva) {
-            Some(o) => o,
-            None => continue,
-        };
-        let dll_name = read_cstr(raw, name_off);
-        let dll_base = dll_name
-            .rsplit(&['/', '\\'][..]).next().unwrap_or(&dll_name)
-            .trim_end_matches(".dll")
-            .trim_end_matches(".DLL")
-            .to_lowercase();
-        if dll_base != target_dll_base {
-            continue;
-        }
-
-        let thunk_rva = if ilt_rva != 0 { ilt_rva } else { iat_rva };
-        let mut ilt_off = match pe.rva_to_offset(thunk_rva) {
-            Some(o) => o,
-            None => continue,
-        };
-
-        let mut slot_idx = 0u32;
-        loop {
-            let thunk = if pe.arch == 64 {
-                let v = read_u64(raw, ilt_off);
-                ilt_off += 8;
-                v
-            } else {
-                let v = read_u32(raw, ilt_off) as u64;
-                ilt_off += 4;
-                v
-            };
-            if thunk == 0 {
-                break;
-            }
-
-            let is_ord = (pe.arch == 64 && thunk & ord_flag_64 != 0)
-                || (pe.arch == 32 && thunk & ord_flag_32 != 0);
-
-            let matches = if is_ord {
-                format!("#{}", thunk & 0xFFFF) == target_func
-            } else {
-                let hint_rva = (thunk & 0x7FFF_FFFF) as u32;
-                match pe.rva_to_offset(hint_rva) {
-                    Some(ho) => read_cstr(raw, ho + 2) == target_func,
-                    None => false,
-                }
-            };
-
-            if matches {
-                let slot_rva = iat_rva + slot_idx * ptr_size;
-                return Some(pe.image_base + slot_rva as u64);
-            }
-            slot_idx += 1;
-        }
-    }
-    None
 }
 
 fn anomaly(severity: &str, kind: &str, detail: String) -> PeAnomaly {
