@@ -3,8 +3,10 @@ use super::constants::{
     IMAGE_DIRECTORY_ENTRY_EXCEPTION, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG, IMAGE_DIRECTORY_ENTRY_TLS,
 };
 use super::types::{
-    read_cstr, read_u16, read_u32, read_u64, PeClrInfo, PeCodeViewInfo, PeDebugEntry, PeDebugInfo,
-    PeFile, PeLoadConfigInfo, PeRuntimeFunctionInfo, PeStartupRoutine, PeTlsCallback, PeTlsInfo,
+    read_cstr, read_u16, read_u32, read_u64, PeChainedRuntimeFunction, PeClrInfo, PeCodeViewInfo,
+    PeDataPointer, PeDataString, PeDataSummary, PeDebugEntry, PeDebugInfo, PeEpilogScope, PeFile,
+    PeLoadConfigInfo, PeRuntimeFunctionInfo, PeSavedRegister, PeStartupRoutine, PeTlsCallback,
+    PeTlsInfo, PeUnwindOperation, PeVTable,
 };
 use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 use std::collections::{BTreeSet, VecDeque};
@@ -156,6 +158,47 @@ pub fn read_runtime_function(
     None
 }
 
+pub fn read_runtime_functions(pe: &PeFile, raw: &[u8]) -> Vec<PeRuntimeFunctionInfo> {
+    if pe.arch != 64 {
+        return Vec::new();
+    }
+
+    let (dir_rva, dir_size) = pe.data_dir(IMAGE_DIRECTORY_ENTRY_EXCEPTION);
+    if dir_rva == 0 || dir_size < 12 {
+        return Vec::new();
+    }
+    let Some(mut off) = pe.rva_to_offset(dir_rva) else {
+        return Vec::new();
+    };
+    let end = off.saturating_add(dir_size as usize).min(raw.len());
+    let mut out = Vec::new();
+    while off + 12 <= end {
+        let begin_rva = read_u32(raw, off);
+        let end_rva = read_u32(raw, off + 4);
+        let unwind_info_rva = read_u32(raw, off + 8);
+        if begin_rva != 0 && end_rva > begin_rva {
+            if let Some(info) = parse_unwind_info(pe, raw, begin_rva, end_rva, unwind_info_rva) {
+                out.push(info);
+            }
+        }
+        off += 12;
+    }
+    out
+}
+
+pub fn read_data_summary(pe: &PeFile, raw: &[u8]) -> PeDataSummary {
+    let runtime_functions = read_runtime_functions(pe, raw);
+    let strings = read_data_strings(pe, raw, 256);
+    let pointers = read_data_pointers(pe, raw, 512);
+    let vtables = read_vtables_from_pointers(pe, &pointers, 128);
+    PeDataSummary {
+        strings,
+        vtables,
+        pointers,
+        runtime_functions,
+    }
+}
+
 pub fn read_tls_info(pe: &PeFile, raw: &[u8]) -> Option<PeTlsInfo> {
     let (dir_rva, dir_size) = pe.data_dir(IMAGE_DIRECTORY_ENTRY_TLS);
     let min_size = if pe.arch == 64 { 40usize } else { 24usize };
@@ -179,6 +222,190 @@ pub fn read_tls_info(pe: &PeFile, raw: &[u8]) -> Option<PeTlsInfo> {
 
     let callbacks = parse_tls_callbacks(pe, raw, address_of_callbacks);
     Some(PeTlsInfo { callbacks })
+}
+
+fn read_data_strings(pe: &PeFile, raw: &[u8], limit: usize) -> Vec<PeDataString> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for section in pe
+        .sections
+        .iter()
+        .filter(|section| is_data_section(&section.name))
+    {
+        let start = section.raw_offset as usize;
+        let end = start
+            .saturating_add(section.raw_size as usize)
+            .min(raw.len());
+        let mut off = start;
+        while off < end && out.len() < limit {
+            if let Some((value, consumed)) = read_ascii_string_at(raw, off, end) {
+                let rva = section.virtual_address + (off - start) as u32;
+                if seen.insert((rva, "ascii")) {
+                    out.push(PeDataString {
+                        rva,
+                        section_name: section.name.clone(),
+                        encoding: "ascii".to_owned(),
+                        value,
+                    });
+                }
+                off += consumed.max(1);
+                continue;
+            }
+            if let Some((value, consumed)) = read_utf16_string_at(raw, off, end) {
+                let rva = section.virtual_address + (off - start) as u32;
+                if seen.insert((rva, "utf16")) {
+                    out.push(PeDataString {
+                        rva,
+                        section_name: section.name.clone(),
+                        encoding: "utf16".to_owned(),
+                        value,
+                    });
+                }
+                off += consumed.max(2);
+                continue;
+            }
+            off += 1;
+        }
+    }
+    out
+}
+
+fn read_data_pointers(pe: &PeFile, raw: &[u8], limit: usize) -> Vec<PeDataPointer> {
+    let ptr_width = if pe.arch == 64 { 8usize } else { 4usize };
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for section in pe
+        .sections
+        .iter()
+        .filter(|section| is_data_section(&section.name))
+    {
+        let start = section.raw_offset as usize;
+        let end = start
+            .saturating_add(section.raw_size as usize)
+            .min(raw.len());
+        let mut off = start;
+        while off + ptr_width <= end && out.len() < limit {
+            let value = if ptr_width == 8 {
+                read_u64(raw, off)
+            } else {
+                read_u32(raw, off) as u64
+            };
+            let site_rva = section.virtual_address + (off - start) as u32;
+            if let Some(target_rva) = pe.va_to_rva(value) {
+                if let Some(target_section) = pe.rva_to_section(target_rva) {
+                    if seen.insert(site_rva) {
+                        out.push(PeDataPointer {
+                            rva: site_rva,
+                            target_rva,
+                            section_name: section.name.clone(),
+                            target_section_name: target_section.name.clone(),
+                            kind: if target_section.is_executable() {
+                                "code".to_owned()
+                            } else {
+                                "data".to_owned()
+                            },
+                        });
+                    }
+                }
+            }
+            off += ptr_width;
+        }
+    }
+    out
+}
+
+fn read_vtables_from_pointers(
+    pe: &PeFile,
+    pointers: &[PeDataPointer],
+    limit: usize,
+) -> Vec<PeVTable> {
+    let ptr_width = if pe.arch == 64 { 8u32 } else { 4u32 };
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    while idx < pointers.len() && out.len() < limit {
+        if pointers[idx].kind != "code" {
+            idx += 1;
+            continue;
+        }
+        let start = idx;
+        let mut entries = vec![pointers[idx].target_rva];
+        idx += 1;
+        while idx < pointers.len()
+            && pointers[idx].kind == "code"
+            && pointers[idx].section_name == pointers[start].section_name
+            && pointers[idx].rva == pointers[idx - 1].rva.saturating_add(ptr_width)
+            && entries.len() < 256
+        {
+            entries.push(pointers[idx].target_rva);
+            idx += 1;
+        }
+        if entries.len() >= 2 {
+            out.push(PeVTable {
+                rva: pointers[start].rva,
+                section_name: pointers[start].section_name.clone(),
+                entries,
+            });
+        }
+    }
+    out
+}
+
+fn is_data_section(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        ".rdata"
+            | "rdata"
+            | ".data"
+            | "data"
+            | ".pdata"
+            | "pdata"
+            | ".xdata"
+            | "xdata"
+            | ".idata"
+            | "idata"
+    )
+}
+
+fn read_ascii_string_at(raw: &[u8], off: usize, end: usize) -> Option<(String, usize)> {
+    let mut pos = off;
+    while pos < end && matches!(raw[pos], 0x20..=0x7E | b'\t' | b'\r' | b'\n') {
+        pos += 1;
+    }
+    let len = pos.saturating_sub(off);
+    if len < 4 || pos >= end || raw[pos] != 0 {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&raw[off..pos]).to_string();
+    let alpha = text.bytes().filter(|b| b.is_ascii_alphabetic()).count();
+    if alpha < 2 {
+        return None;
+    }
+    Some((text, len + 1))
+}
+
+fn read_utf16_string_at(raw: &[u8], off: usize, end: usize) -> Option<(String, usize)> {
+    let mut units = Vec::new();
+    let mut pos = off;
+    while pos + 1 < end {
+        let unit = u16::from_le_bytes([raw[pos], raw[pos + 1]]);
+        if unit == 0 {
+            break;
+        }
+        if !(0x20..=0x7E).contains(&unit) && !matches!(unit, 9 | 10 | 13) {
+            break;
+        }
+        units.push(unit);
+        pos += 2;
+    }
+    if units.len() < 4 || pos + 1 >= end || raw[pos] != 0 || raw[pos + 1] != 0 {
+        return None;
+    }
+    let text = String::from_utf16(&units).ok()?;
+    let alpha = text.bytes().filter(|b| b.is_ascii_alphabetic()).count();
+    if alpha < 2 {
+        return None;
+    }
+    Some((text, (pos + 2) - off))
 }
 
 pub fn find_startup_routines(pe: &PeFile, raw: &[u8]) -> Vec<PeStartupRoutine> {
@@ -548,9 +775,29 @@ fn parse_unwind_info(
     let codes_size = (unwind_code_count as usize) * 2;
     let aligned_codes_size = (codes_size + 3) & !3;
     let handler_field_off = off + 4 + aligned_codes_size;
-
-    let exception_handler_rva = if unwind_flags & 0x3 != 0 && handler_field_off + 4 <= raw.len() {
-        read_u32(raw, handler_field_off)
+    let (unwind_operations, stack_alloc_size, saved_registers) =
+        parse_unwind_operations(raw, off + 4, unwind_code_count);
+    let chained_parent = if unwind_flags & 0x4 != 0 && handler_field_off + 12 <= raw.len() {
+        Some(PeChainedRuntimeFunction {
+            begin_rva: read_u32(raw, handler_field_off),
+            end_rva: read_u32(raw, handler_field_off + 4),
+            unwind_info_rva: read_u32(raw, handler_field_off + 8),
+        })
+    } else {
+        None
+    };
+    let exception_handler_rva =
+        if unwind_flags & 0x3 != 0 && unwind_flags & 0x4 == 0 && handler_field_off + 4 <= raw.len()
+        {
+            read_u32(raw, handler_field_off)
+        } else {
+            0
+        };
+    let handler_data_rva = if exception_handler_rva != 0 {
+        unwind_info_rva
+            .saturating_add(4)
+            .saturating_add(aligned_codes_size as u32)
+            .saturating_add(4)
     } else {
         0
     };
@@ -566,7 +813,185 @@ fn parse_unwind_info(
         frame_register,
         frame_offset,
         exception_handler_rva,
+        handler_data_rva,
+        stack_alloc_size,
+        saved_registers,
+        unwind_operations,
+        chained_parent,
+        epilog_scopes: infer_epilog_scopes(raw, pe, begin_rva, end_rva),
     })
+}
+
+fn parse_unwind_operations(
+    raw: &[u8],
+    codes_off: usize,
+    count: u8,
+) -> (Vec<PeUnwindOperation>, u32, Vec<PeSavedRegister>) {
+    let mut ops = Vec::new();
+    let mut saved = Vec::new();
+    let mut stack_alloc = 0u32;
+    let mut idx = 0usize;
+    while idx < count as usize {
+        let off = codes_off + idx * 2;
+        if off + 2 > raw.len() {
+            break;
+        }
+        let code_offset = raw[off];
+        let b = raw[off + 1];
+        let uwop = b & 0x0F;
+        let info = b >> 4;
+        let mut stack_offset = 0u32;
+        let mut extra_slots = 0usize;
+        let (name, description) = match uwop {
+            0 => {
+                saved.push(PeSavedRegister {
+                    register: unwind_reg_name(info).to_owned(),
+                    stack_offset: stack_alloc,
+                    prolog_offset: code_offset,
+                });
+                (
+                    "UWOP_PUSH_NONVOL",
+                    format!("push {}", unwind_reg_name(info)),
+                )
+            }
+            1 => {
+                if info == 0 {
+                    let extra = read_u16(raw, off + 2) as u32 * 8;
+                    stack_alloc = stack_alloc.saturating_add(extra);
+                    stack_offset = extra;
+                    extra_slots = 1;
+                    ("UWOP_ALLOC_LARGE", format!("alloc large 0x{:X}", extra))
+                } else {
+                    let extra = read_u32(raw, off + 2);
+                    stack_alloc = stack_alloc.saturating_add(extra);
+                    stack_offset = extra;
+                    extra_slots = 2;
+                    ("UWOP_ALLOC_LARGE", format!("alloc large 0x{:X}", extra))
+                }
+            }
+            2 => {
+                let extra = (info as u32) * 8 + 8;
+                stack_alloc = stack_alloc.saturating_add(extra);
+                stack_offset = extra;
+                ("UWOP_ALLOC_SMALL", format!("alloc small 0x{:X}", extra))
+            }
+            3 => ("UWOP_SET_FPREG", "establish frame pointer".to_owned()),
+            4 | 5 => {
+                let scale = if uwop == 4 { 8 } else { 1 };
+                let slots = if uwop == 4 { 1 } else { 2 };
+                let extra = if uwop == 4 {
+                    read_u16(raw, off + 2) as u32 * scale
+                } else {
+                    read_u32(raw, off + 2) * scale
+                };
+                saved.push(PeSavedRegister {
+                    register: unwind_reg_name(info).to_owned(),
+                    stack_offset: extra,
+                    prolog_offset: code_offset,
+                });
+                stack_offset = extra;
+                extra_slots = slots;
+                (
+                    if uwop == 4 {
+                        "UWOP_SAVE_NONVOL"
+                    } else {
+                        "UWOP_SAVE_NONVOL_FAR"
+                    },
+                    format!("save {} at stack+0x{:X}", unwind_reg_name(info), extra),
+                )
+            }
+            8 | 9 => {
+                let scale = if uwop == 8 { 16 } else { 1 };
+                let slots = if uwop == 8 { 1 } else { 2 };
+                let extra = if uwop == 8 {
+                    read_u16(raw, off + 2) as u32 * scale
+                } else {
+                    read_u32(raw, off + 2) * scale
+                };
+                stack_offset = extra;
+                extra_slots = slots;
+                (
+                    if uwop == 8 {
+                        "UWOP_SAVE_XMM128"
+                    } else {
+                        "UWOP_SAVE_XMM128_FAR"
+                    },
+                    format!("save xmm{} at stack+0x{:X}", info, extra),
+                )
+            }
+            10 => (
+                "UWOP_PUSH_MACHFRAME",
+                if info == 0 {
+                    "push machine frame".to_owned()
+                } else {
+                    "push machine frame with error code".to_owned()
+                },
+            ),
+            _ => ("UWOP_UNKNOWN", format!("unknown unwind op {}", uwop)),
+        };
+        ops.push(PeUnwindOperation {
+            code_offset,
+            op: name.to_owned(),
+            info,
+            stack_offset,
+            description,
+        });
+        idx += 1 + extra_slots;
+    }
+    (ops, stack_alloc, saved)
+}
+
+fn infer_epilog_scopes(
+    raw: &[u8],
+    pe: &PeFile,
+    begin_rva: u32,
+    end_rva: u32,
+) -> Vec<PeEpilogScope> {
+    let Some(start) = pe.rva_to_offset(begin_rva) else {
+        return Vec::new();
+    };
+    let Some(end) = pe.rva_to_offset(end_rva.saturating_sub(1)).map(|v| v + 1) else {
+        return Vec::new();
+    };
+    let end = end.min(raw.len());
+    if start >= end {
+        return Vec::new();
+    }
+    let window_start = end.saturating_sub(32).max(start);
+    let mut scopes = Vec::new();
+    for (off, b) in raw.iter().enumerate().take(end).skip(window_start) {
+        if *b == 0xC3 || *b == 0xC2 || *b == 0xCB || *b == 0xCA {
+            let rva = begin_rva.saturating_add((off - start) as u32);
+            scopes.push(PeEpilogScope {
+                start_offset: rva.saturating_sub(begin_rva),
+                end_offset: rva.saturating_sub(begin_rva).saturating_add(1),
+                source: "ret-scan".to_owned(),
+            });
+        }
+    }
+    scopes
+}
+
+fn unwind_reg_name(reg: u8) -> &'static str {
+    match reg {
+        0 => "rax",
+        1 => "rcx",
+        2 => "rdx",
+        3 => "rbx",
+        4 => "rsp",
+        5 => "rbp",
+        6 => "rsi",
+        7 => "rdi",
+        8 => "r8",
+        9 => "r9",
+        10 => "r10",
+        11 => "r11",
+        12 => "r12",
+        13 => "r13",
+        14 => "r14",
+        15 => "r15",
+        _ => "unknown",
+    }
 }
 
 fn parse_codeview_info(raw: &[u8]) -> Option<PeCodeViewInfo> {
