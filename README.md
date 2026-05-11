@@ -16,6 +16,8 @@ RESX is a Windows binary analysis toolkit for terminal-first reversing, symbol-b
 ## Documentation
 
 - [CLI documentation](docs/cli.md)
+- [Analysis surfaces](docs/analysis-surfaces.md)
+- [JSON schemas](docs/json-schemas.md)
 - [VS Code extension documentation](docs/vscode-extension.md)
 
 ## Screenshots
@@ -68,9 +70,13 @@ Common commands:
 ```powershell
 resx dump <dll> <function>
 resx cfg <dll> <function>
+resx reconstruct-cfg <dll>
 resx intelli <dll> [function]
 resx peinfo <dll>
 resx locate <name>
 resx locate-sym <name>
+resx scan <path>
 resx syms <dll>
 ```
+
+Newer analysis surfaces include PDB/export-backed function discovery, recursive startup CFG reconstruction, x64 unwind and exception-handler edges, typed pseudo-C reconstruction, indirect-control-flow annotations, Win32K GUI syscall tracing, scan-driven fuzz target ranking, and versioned JSON output for automation.

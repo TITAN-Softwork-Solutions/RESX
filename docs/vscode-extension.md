@@ -31,7 +31,7 @@ Install the generated `.vsix` from VS Code with `Extensions: Install from VSIX..
 - Disassembly, xrefs, CFG, recompilation, hex view, and nested API call trees
 - Symbol and PDB controls, including explicit symbol path and PDB file settings
 - Command palette entry points for `RESX: Locate`, `RESX: Locate Symbol`, and `RESX: Dump`
-- Syscall stub annotations and direct follow-through into kernel targets
+- Syscall stub annotations and direct follow-through into kernel targets, including Win32K GUI syscall paths
 - `Dev` trace tab for `resx` command invocations, arguments, timing, and stderr/error output
 
 ## Command Palette
