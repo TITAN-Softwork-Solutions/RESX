@@ -74,6 +74,15 @@ pub struct Cli {
     #[arg(long = "intelli")]
     pub intelli: bool,
 
+    #[arg(long = "reconstruct-cfg")]
+    pub reconstruct_cfg: bool,
+
+    #[arg(long = "thread-filter", default_value = "")]
+    pub reconstruct_thread_filter: String,
+
+    #[arg(long = "api-filter", default_value = "")]
+    pub reconstruct_api_filter: String,
+
     #[arg(long = "max-insns", default_value_t = 500)]
     pub max_insns: usize,
 
@@ -174,6 +183,27 @@ pub struct Cli {
     #[arg(long = "yara", action = clap::ArgAction::Append, value_name = "RULE_FILE")]
     pub yara: Vec<String>,
 
+    #[arg(long = "resx-scan", hide = true)]
+    pub resx_scan: bool,
+
+    #[arg(long = "scan-root", hide = true)]
+    pub scan_root: Option<String>,
+
+    #[arg(long = "jsonl")]
+    pub jsonl: bool,
+
+    #[arg(long = "extensions", default_value = "exe,dll,sys")]
+    pub scan_extensions: String,
+
+    #[arg(long = "max-files", default_value_t = 200)]
+    pub max_files: usize,
+
+    #[arg(long = "max-file-mb", default_value_t = 200)]
+    pub max_file_mb: u64,
+
+    #[arg(long = "max-candidates", default_value_t = 32)]
+    pub max_candidates: usize,
+
     #[arg(long = "include-dir", alias = "scan-dir", action = clap::ArgAction::Append, value_name = "DIR")]
     pub scan_dirs: Vec<String>,
 
@@ -236,6 +266,11 @@ pub struct Cli {
 
     #[arg(long = "api")]
     pub explain_api: bool,
+
+    /// Enable aggressive tracing: recursive register backward-slice, decoder-driven
+    /// reverse-index, indirect-JMP emission, and suspicion annotations in disasm.
+    #[arg(long = "hostile")]
+    pub hostile: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +303,9 @@ pub struct Config {
     pub unsafe_map_image: bool,
     pub hookchk: bool,
     pub intelli: bool,
+    pub reconstruct_cfg: bool,
+    pub reconstruct_thread_filter: String,
+    pub reconstruct_api_filter: String,
 
     pub max_insns: usize,
     pub max_bytes: usize,
@@ -317,6 +355,7 @@ pub struct Config {
     pub explain: bool,
     pub explain_prefix: bool,
     pub explain_api: bool,
+    pub hostile: bool,
 }
 
 impl Config {
@@ -351,6 +390,9 @@ impl Config {
             unsafe_map_image: cli.unsafe_map_image,
             hookchk: cli.hookchk,
             intelli: cli.intelli,
+            reconstruct_cfg: cli.reconstruct_cfg,
+            reconstruct_thread_filter: cli.reconstruct_thread_filter.clone(),
+            reconstruct_api_filter: cli.reconstruct_api_filter.clone(),
             max_insns: cli.max_insns,
             max_bytes: cli.max_bytes,
             show_bytes: cli.show_bytes && !cli.no_bytes,
@@ -361,7 +403,7 @@ impl Config {
             show_rva: cli.show_rva,
             addr_width: cli.addr_width,
             byte_col_width: cli.byte_col_width,
-            json: cli.json,
+            json: cli.json || cli.jsonl || cli.resx_scan,
             out_file: cli.out_file.clone().unwrap_or_default(),
             verbose: cli.verbose,
             quiet: cli.quiet,
@@ -397,6 +439,7 @@ impl Config {
             explain: cli.explain,
             explain_prefix: cli.explain_prefix,
             explain_api: cli.explain_api,
+            hostile: cli.hostile,
         }
     }
 
