@@ -210,7 +210,7 @@ export class ResxEditorProvider implements vscode.CustomReadonlyEditorProvider {
                     const target = msg.dllPath || msg.dll || filePath;
                     const args = ['dump', target, msg.func,
                         '--cfg', 'text', '--funcs-depth', String(msg.funcsDepth || 1), '--strings', '--xrefs', '--recomp'];
-                    const result = await runDumpWithForwardFallback(this.context, args, { ...cfgOpts(), funcsDepth: msg.funcsDepth || 1 });
+                    const result = await runDumpWithForwardFallback(this.context, args, { ...cfgOpts(), funcsDepth: msg.funcsDepth || 1, hostile: !!msg.hostile });
                     send({
                         type: 'dump_result',
                         func: msg.func,
@@ -253,9 +253,32 @@ export class ResxEditorProvider implements vscode.CustomReadonlyEditorProvider {
                     break;
                 }
 
+                case 'reconstruct_cfg': {
+                    const result = await vscode.window.withProgress({
+                        location: vscode.ProgressLocation.Notification,
+                        title: `RESX: reconstructing startup flow for ${path.basename(filePath)}`,
+                        cancellable: false,
+                    }, async () => runJson(this.context, ['reconstruct-cfg', filePath], cfgOpts()));
+                    send({ type: 'reconstruct_cfg_result', ...result });
+                    break;
+                }
+
+                case 'scan_path': {
+                    const root = typeof msg.path === 'string' && msg.path.trim()
+                        ? msg.path.trim()
+                        : path.dirname(filePath);
+                    const result = await vscode.window.withProgress({
+                        location: vscode.ProgressLocation.Notification,
+                        title: `RESX: scanning ${path.basename(root) || root}`,
+                        cancellable: false,
+                    }, async () => runJson(this.context, ['scan', root]));
+                    send({ type: 'scan_result', root, ...result });
+                    break;
+                }
+
                 case 'dump_at_rva': {
                     const target = msg.dllPath || filePath;
-                    const result = await runDumpAtRvaWithFallback(this.context, target, msg.rva, msg.dll, { ...cfgOpts(), funcsDepth: msg.funcsDepth || 1 });
+                    const result = await runDumpAtRvaWithFallback(this.context, target, msg.rva, msg.dll, { ...cfgOpts(), funcsDepth: msg.funcsDepth || 1, hostile: !!msg.hostile });
                     send({
                         type: 'dump_result',
                         func: msg.label,
@@ -310,6 +333,17 @@ export class ResxEditorProvider implements vscode.CustomReadonlyEditorProvider {
                         title: 'Select symbol search path',
                     });
                     send({ type: 'file_picked', kind: 'sym_path', path: uris?.[0]?.fsPath ?? null });
+                    break;
+                }
+
+                case 'scan_browse_folder': {
+                    const uris = await vscode.window.showOpenDialog({
+                        canSelectMany: false,
+                        canSelectFiles: false,
+                        canSelectFolders: true,
+                        title: 'Select folder to scan',
+                    });
+                    send({ type: 'file_picked', kind: 'scan_root', path: uris?.[0]?.fsPath ?? null });
                     break;
                 }
 
@@ -386,6 +420,8 @@ export class ResxEditorProvider implements vscode.CustomReadonlyEditorProvider {
       <button class="tab" data-tab="imports">Imports</button>
       <button class="tab" data-tab="symbols">Symbols</button>
       <button class="tab" data-tab="types">Types</button>
+      <button class="tab" data-tab="flow">Flow</button>
+      <button class="tab" data-tab="scan">Scan</button>
       <button class="tab" id="tab-dump" data-tab="dump" style="display:none">Dump</button>
       <button class="tab tab-dev" data-tab="dev">Dev</button>
     </nav>
@@ -401,6 +437,8 @@ export class ResxEditorProvider implements vscode.CustomReadonlyEditorProvider {
     <div id="panel-imports"   class="panel"><p class="loading">Analyzing&hellip;</p></div>
     <div id="panel-symbols"   class="panel"><p class="loading">Analyzing&hellip;</p></div>
     <div id="panel-types"     class="panel"><p class="loading">Analyzing&hellip;</p></div>
+    <div id="panel-flow"      class="panel"><p class="loading">Run reconstruct-cfg to build startup flow.</p></div>
+    <div id="panel-scan"      class="panel"><p class="loading">Run scan to discover fuzz candidates.</p></div>
     <div id="panel-dev"       class="panel"><p class="loading">Waiting for RESX commands&hellip;</p></div>
     <div id="panel-dump"      class="panel"></div>
   </div>
