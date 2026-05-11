@@ -13,6 +13,7 @@ export interface RunOptions {
     symPaths?: string[];
     pdbFile?: string;
     funcsDepth?: number;
+    hostile?: boolean;
 }
 
 export interface RunTraceEntry {
@@ -300,6 +301,10 @@ export function runJson(
         }
         if (opts?.pdbFile) {
             extra.push('--pdb', opts.pdbFile);
+        }
+
+        if (opts?.hostile) {
+            extra.push('--hostile');
         }
 
         const allArgs = [...args, ...extra, '--json', '--no-color', '--quiet'];
