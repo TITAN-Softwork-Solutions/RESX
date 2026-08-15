@@ -4,11 +4,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white&style=for-the-badge" />
   <img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white&style=for-the-badge" />
-  <img src="https://img.shields.io/badge/CLI-Tools-4CAF50?style=for-the-badge" />
   <img src="https://img.shields.io/github/actions/workflow/status/RYFTENIUS/RESX/ci.yml?style=for-the-badge&label=CI" />
-  <a href="https://ryftenius.com">
-    <img src="https://img.shields.io/discord/1240608336005828668?label=RYFTENIUS%20Softworks&logo=discord&color=5865F2&style=for-the-badge" />
-  </a>
 </p>
 
 RESX is a Windows binary analysis toolkit for PE inspection, export/import analysis, PDB-backed symbols, targeted disassembly, pseudo-C reconstruction, CFG recovery, startup-flow reconstruction, triage, structural diffing, corpus indexing, sample hunting, YARA scanning, and native DLL/FFI integration.
@@ -16,7 +12,7 @@ RESX is a Windows binary analysis toolkit for PE inspection, export/import analy
 It ships as:
 
 - A Rust CLI (`resx.exe`) for terminal and automation workflows.
-- A VS Code binary viewer for `.exe`, `.dll`, and `.sys` files.
+- A VS Code binary viewer for `.exe`, `.dll`, and `.sys` files, plus opt-in support for PE-formatted `.bin` samples.
 - A native DLL/FFI surface for host applications that want RESX analysis in-process.
 
 ## Documentation
@@ -37,6 +33,9 @@ It ships as:
 - Basic CFG rendering for selected targets.
 - Startup flow reconstruction from entry point, TLS callbacks, thread/workpool callbacks, import calls, indirect edges, and x64 unwind/exception-handler evidence.
 - Static triage with hook/thunk indicators, string references, API call maps, and suspicious control-flow hints.
+- Static behavior triage for syscall stubs, anti-analysis instructions, TLS callbacks, loader APIs, and executable-memory/JIT setup.
+- Protected-file triage for packer markers, OEP handoff candidates, import rebuild leads, VM dispatcher/handler candidates, and layer-2 lift sketches.
+- Terminal entropy maps over executable code with ASCII, zero-byte, unique-byte, and high/low entropy flags.
 - Hostile-mode tracing for packed or deliberately confusing binaries.
 - Reverse caller tracing across priority modules and custom scan scopes.
 - Structural diffing, CFG diff views, code/control heatmaps, corpus indexing, and sample hunting.
@@ -65,6 +64,9 @@ resx dump <image> --at <rva>
 resx cfg <image> <function>
 resx reconstruct-cfg <image>
 resx intelli <image> [function]
+resx behavior <image>
+resx unpack <image>
+resx entropy <image>
 resx peinfo <image>
 resx sections <image>
 resx eat <image>
@@ -100,6 +102,7 @@ Extensions: Install from VSIX...
 
 The extension contributes a custom editor for Windows binaries and command-palette workflows:
 
+- `RESX: Open Binary File`
 - `RESX: Refresh Binary Analysis`
 - `RESX: Locate`
 - `RESX: Locate Symbol`
@@ -171,6 +174,9 @@ Use `--json` for machine-readable output:
 
 ```powershell
 resx peinfo .\sample.dll --json
+resx behavior .\sample.dll --json
+resx unpack .\sample.dll --json
+resx entropy .\sample.dll --json
 resx dump .\sample.dll DllMain --json
 resx reconstruct-cfg .\sample.dll --json
 resx scan .\samples --json
@@ -223,3 +229,7 @@ media/                README screenshots
 ## Notes
 
 RESX analysis is static best-effort evidence. Runtime dispatch, obfuscation, dynamically generated code, packed images, and data-dependent control flow can make static results incomplete. Use hostile-mode and startup-flow reconstruction as investigation aids, not as proof of runtime behaviour.
+
+## License
+
+RESX is available under the [MIT License](LICENSE). You may use, modify, and distribute it provided the RYFTENIUS copyright and license notice are retained.
