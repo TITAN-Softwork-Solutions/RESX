@@ -5,9 +5,9 @@
   <img src="https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white&style=for-the-badge" />
   <img src="https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white&style=for-the-badge" />
   <img src="https://img.shields.io/badge/CLI-Tools-4CAF50?style=for-the-badge" />
-  <img src="https://img.shields.io/github/actions/workflow/status/TITAN-Softwork-Solutions/RESX/ci.yml?style=for-the-badge&label=CI" />
-  <a href="https://titansoftwork.com">
-    <img src="https://img.shields.io/discord/1240608336005828668?label=TITAN%20Softworks&logo=discord&color=5865F2&style=for-the-badge" />
+  <img src="https://img.shields.io/github/actions/workflow/status/RYFTENIUS/RESX/ci.yml?style=for-the-badge&label=CI" />
+  <a href="https://ryftenius.com">
+    <img src="https://img.shields.io/discord/1240608336005828668?label=RYFTENIUS%20Softworks&logo=discord&color=5865F2&style=for-the-badge" />
   </a>
 </p>
 
